@@ -19,6 +19,7 @@ pub mod analyzer;
 struct AppState {
     db: Database,
     scraper: Scraper,
+    tier_cache: Option<(String, Vec<TierEntry>)>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -286,12 +287,27 @@ async fn get_changed_itemsrunes_titles(
 async fn get_tier_list(
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<TierEntry>, String> {
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let patches = state
         .db
         .get_recent_patches(20)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Строим сигнатуру состояния данных (версии + fetched_at) для кеша
+    let mut signature = String::new();
+    for p in &patches {
+        signature.push_str(&p.version);
+        signature.push('|');
+        signature.push_str(&p.fetched_at.to_rfc3339());
+        signature.push(';');
+    }
+
+    if let Some((cached_sig, cached_list)) = &state.tier_cache {
+        if *cached_sig == signature {
+            return Ok(cached_list.clone());
+        }
+    }
 
     let mut map: HashMap<(String, PatchCategory), TierEntry> = HashMap::new();
 
@@ -327,6 +343,8 @@ async fn get_tier_list(
             .then_with(|| b.buffs.cmp(&a.buffs))
             .then_with(|| a.nerfs.cmp(&b.nerfs))
     });
+
+    state.tier_cache = Some((signature, list.clone()));
 
     Ok(list)
 }
@@ -393,7 +411,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(Mutex::new(AppState { db, scraper }));
+            app.manage(Mutex::new(AppState { db, scraper, tier_cache: None }));
             
             let menu = Menu::with_items(app, &[
                 &MenuItem::with_id(app, "Show", "Show", true, None::<&str>)?,
