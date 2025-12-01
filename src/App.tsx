@@ -502,8 +502,7 @@ function TierListView() {
           <div className="divide-y divide-slate-100">
             {filtered.map((entry, idx) => {
               const { icon, name } = resolveIconAndName(entry);
-              const rawScore = entry.buffs - entry.nerfs;
-              const scoreSign = rawScore > 0 ? 1 : rawScore < 0 ? -1 : 0;
+              const score = entry.buffs - entry.nerfs;
               return (
                 <button
                   key={entry.name + entry.category + idx}
@@ -528,7 +527,7 @@ function TierListView() {
                       {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
                     </span>
                     <span className="ml-auto text-[11px] font-mono text-slate-400">
-                      score {scoreSign > 0 ? "+1" : scoreSign < 0 ? "-1" : "0"}
+                      score {score >= 0 ? `+${score}` : score}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-4 w-40 text-xs">
