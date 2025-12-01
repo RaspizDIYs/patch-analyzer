@@ -105,7 +105,7 @@ interface MetaAnalysisDiff { champion_name: string; role: string; win_rate_diff:
 interface ChampionHistoryEntry { patch_version: string; date: string; change: PatchNoteEntry; }
 interface ChampionListItem { name: string; name_en: string; icon_url: string; }
 interface RuneListItem { name: string; nameEn: string; icon_url: string; }
-interface ItemListItem { name: string; nameEn: string; icon_url: string; }
+interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
 interface LogEntry { level: string; message: string; timestamp: string; }
 interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; }
 
@@ -378,6 +378,7 @@ function TierListView() {
           ([id, ru]) => {
             const en = itemsEnJson.data?.[id] ?? {};
             return {
+              id: id as string,
               name: ru.name as string,
               nameEn: (en.name as string) || (ru.name as string),
               icon_url: `https://ddragon.leagueoflegends.com/cdn/${latest}/img/item/${id}.png`,
@@ -501,7 +502,8 @@ function TierListView() {
           <div className="divide-y divide-slate-100">
             {filtered.map((entry, idx) => {
               const { icon, name } = resolveIconAndName(entry);
-              const score = entry.buffs - entry.nerfs;
+              const rawScore = entry.buffs - entry.nerfs;
+              const scoreSign = rawScore > 0 ? 1 : rawScore < 0 ? -1 : 0;
               return (
                 <button
                   key={entry.name + entry.category + idx}
@@ -526,7 +528,7 @@ function TierListView() {
                       {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
                     </span>
                     <span className="ml-auto text-[11px] font-mono text-slate-400">
-                      score {score >= 0 ? `+${score}` : score}
+                      score {scoreSign > 0 ? "+1" : scoreSign < 0 ? "-1" : "0"}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-4 w-40 text-xs">
@@ -647,6 +649,7 @@ function ChampionHistoryView() {
           .map(([id, ru]) => {
             const en = itemsEnJson.data?.[id] ?? {};
             return {
+              id: id as string,
               name: ru.name as string,
               nameEn: (en.name as string) || (ru.name as string),
               icon_url: `https://ddragon.leagueoflegends.com/cdn/${latest}/img/item/${id}.png`,
@@ -1271,7 +1274,7 @@ function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], sele
                     ) : (
                       filtered.map(item => (
                         <div
-                          key={item.name + item.nameEn}
+                          key={item.id}
                           onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
                           className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors"
                         >

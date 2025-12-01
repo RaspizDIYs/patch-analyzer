@@ -54,7 +54,7 @@ pub struct TierEntry {
 fn analyze_change_trend_backend(text: &str) -> i32 {
     let lower = text.to_lowercase();
 
-    // Явное удаление / "больше не ..." (NERF), кроме "больше не уменьшается"
+    // 1) Жёсткий нерф: удаление / "больше не ..." (кроме "больше не уменьшается")
     if lower.contains("удалено")
         || lower.contains("removed")
         || (lower.contains("больше не")
@@ -64,11 +64,12 @@ fn analyze_change_trend_backend(text: &str) -> i32 {
         return -1;
     }
 
-    // "больше не уменьшается" / "no longer reduced" (BUFF)
+    // 2) "больше не уменьшается" / "no longer reduced" — всегда бафф
     if lower.contains("больше не уменьшается") || lower.contains("no longer reduced") {
         return 1;
     }
 
+    // 3) Инверсные статы: меньше = лучше
     let is_inverse = lower.contains("перезарядка")
         || lower.contains("cooldown")
         || lower.contains("стоимость")
@@ -81,13 +82,13 @@ fn analyze_change_trend_backend(text: &str) -> i32 {
         || lower.contains("время")
         || lower.contains("time");
 
-    // Попробуем сравнить числа "from -> to"
-    let arrow_re =
-        Regex::new(r"(\d+(?:[.,]\d+)?)\s*(?:→|⇒|->)\s*(\d+(?:[.,]\d+)?)").unwrap();
-    if let Some(caps) = arrow_re.captures(text) {
-        let parse_side = |s: &str| -> f64 {
-            let nums: Vec<f64> = Regex::new(r"[-+]?\d+(?:[.,]\d+)?")
-                .unwrap()
+    // 4) Разбираем "from -> to" как на фронте (аналог analyzeChangeTrend)
+    let arrow_re = Regex::new(r"\s*(?:→|⇒|->)\s*").unwrap();
+    let parts: Vec<&str> = arrow_re.split(text).collect();
+    if parts.len() == 2 {
+        let parse_val = |s: &str| -> f64 {
+            let num_re = Regex::new(r"[-+]?\d+(?:[.,]\d+)?").unwrap();
+            let nums: Vec<f64> = num_re
                 .find_iter(s)
                 .filter_map(|m| m.as_str().replace(',', ".").parse::<f64>().ok())
                 .collect();
@@ -97,8 +98,10 @@ fn analyze_change_trend_backend(text: &str) -> i32 {
                 nums.iter().sum()
             }
         };
-        let from = parse_side(&caps[1]);
-        let to = parse_side(&caps[2]);
+
+        let from = parse_val(parts[0]);
+        let to = parse_val(parts[1]);
+
         if from.is_finite() && to.is_finite() {
             if to > from {
                 return if is_inverse { -1 } else { 1 };
@@ -109,20 +112,20 @@ fn analyze_change_trend_backend(text: &str) -> i32 {
         }
     }
 
-    // Ключевые слова: бафф
-    let buff_re = Regex::new(r"(увеличен|усилен|increased|buffed|new effect|новый эффект)")
-        .unwrap();
+    // 5) Ключевые слова: бафф
+    let buff_re =
+        Regex::new(r"(увеличен|усилен|increased|buffed|new effect|новый эффект)").unwrap();
     if buff_re.is_match(&lower) {
         return 1;
     }
 
-    // Ключевые слова: нерф
-    let nerf_re = Regex::new(r"(уменьшен|ослаблен|decreased|nerfed|removed|удалено)")
-        .unwrap();
+    // 6) Ключевые слова: нерф
+    let nerf_re = Regex::new(r"(уменьшен|ослаблен|decreased|nerfed|removed|удалено)").unwrap();
     if nerf_re.is_match(&lower) {
         return -1;
     }
 
+    // 7) Иначе — изменение без явного баффа/нерфа
     0
 }
 
