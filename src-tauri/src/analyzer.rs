@@ -1,4 +1,4 @@
-use crate::models::{ChampionStats, MetaAnalysisDiff, PatchData, ChangeType, LaneRole};
+use crate::models::{ChampionStats, MetaAnalysisDiff, PatchData, ChangeType, PatchCategory};
 use std::collections::HashMap;
 
 pub struct Analyzer;
@@ -7,60 +7,68 @@ impl Analyzer {
     pub fn compare_patches(current: &PatchData, previous: &PatchData) -> Vec<MetaAnalysisDiff> {
         let mut diffs = Vec::new();
         
-        let prev_map: HashMap<(String, LaneRole), &ChampionStats> = previous.champions.iter()
-            .map(|c| ((c.name.clone(), c.role.clone()), c))
-            .collect();
+        // Create a map of previous stats
+        let mut prev_map: HashMap<(String, crate::models::LaneRole), &ChampionStats> = HashMap::new();
+        for champ in &previous.champions {
+            prev_map.insert((champ.name.clone(), champ.role.clone()), champ);
+        }
 
-        // Карта патч-нотов для быстрого поиска изменений
-        let patch_notes_map: HashMap<String, ChangeType> = current.patch_notes.iter()
-            .map(|n| (n.champion_name.clone(), n.change_type.clone()))
-            .collect();
-
-        for curr in &current.champions {
-            let key = (curr.name.clone(), curr.role.clone());
-            
-            let mut win_diff = 0.0;
-            let mut pick_diff = 0.0;
-            
-            if let Some(prev) = prev_map.get(&key) {
-                win_diff = curr.win_rate - prev.win_rate;
-                pick_diff = curr.pick_rate - prev.pick_rate;
+        // Create a map of patch notes for quick lookup
+        // Only look at Champions category for meta analysis
+        let mut patch_notes_map: HashMap<String, (ChangeType, Option<String>)> = HashMap::new();
+        for note in &current.patch_notes {
+            if note.category == PatchCategory::Champions {
+                patch_notes_map.insert(note.title.clone(), (note.change_type.clone(), note.image_url.clone()));
             }
+        }
 
-            // Логика предсказания (пункт 6)
-            let predicted = if let Some(change) = patch_notes_map.get(&curr.name) {
-                // Если есть изменения в патче, предсказываем влияние
-                Some(change.clone())
+        for curr_champ in &current.champions {
+            let key = (curr_champ.name.clone(), curr_champ.role.clone());
+            
+            let (win_rate_diff, pick_rate_diff) = if let Some(prev_champ) = prev_map.get(&key) {
+                (
+                    curr_champ.win_rate - prev_champ.win_rate,
+                    curr_champ.pick_rate - prev_champ.pick_rate,
+                )
             } else {
-                None
+                (0.0, 0.0) 
             };
             
-            // Добавляем в список только если есть изменения статистики ИЛИ есть запись в патч-нотах
-            if win_diff.abs() > 0.01 || pick_diff.abs() > 0.01 || predicted.is_some() {
+            // Determine predicted change
+            // Try matching by exact name or partial match if needed
+            let (predicted, note_image) = patch_notes_map.get(&curr_champ.name)
+                .map(|(c, i)| (Some(c.clone()), i.clone()))
+                .unwrap_or((None, None));
+
+            let image_url = curr_champ.image_url.clone().or(note_image);
+
+            // Filter interesting changes
+            if win_rate_diff.abs() > 0.5 || pick_rate_diff.abs() > 0.5 || predicted.is_some() {
                 diffs.push(MetaAnalysisDiff {
-                    champion_name: curr.name.clone(),
-                    role: curr.role.clone(),
-                    win_rate_diff: (win_diff * 100.0).round() / 100.0,
-                    pick_rate_diff: (pick_diff * 100.0).round() / 100.0,
+                    champion_name: curr_champ.name.clone(),
+                    role: curr_champ.role.clone(),
+                    win_rate_diff: (win_rate_diff * 10.0).round() / 10.0,
+                    pick_rate_diff: (pick_rate_diff * 10.0).round() / 10.0,
                     predicted_change: predicted,
+                    champion_image_url: image_url,
                 });
             }
         }
-        
-        // Сортируем: Сначала те, у кого есть предсказания (изменения в патче), потом по винрейту
+
+        // Sort
         diffs.sort_by(|a, b| {
-            let a_has_note = a.predicted_change.is_some();
-            let b_has_note = b.predicted_change.is_some();
+            let a_has_pred = a.predicted_change.is_some();
+            let b_has_pred = b.predicted_change.is_some();
             
-            if a_has_note && !b_has_note {
-                std::cmp::Ordering::Less // A выше
-            } else if !a_has_note && b_has_note {
+            if a_has_pred && !b_has_pred {
+                std::cmp::Ordering::Less
+            } else if !a_has_pred && b_has_pred {
                 std::cmp::Ordering::Greater
             } else {
-                b.win_rate_diff.partial_cmp(&a.win_rate_diff).unwrap_or(std::cmp::Ordering::Equal)
+                b.win_rate_diff.abs().partial_cmp(&a.win_rate_diff.abs()).unwrap_or(std::cmp::Ordering::Equal)
             }
         });
-        
+
         diffs
     }
 }

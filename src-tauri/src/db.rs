@@ -38,6 +38,12 @@ impl Database {
         Ok(Self { pool })
     }
 
+    pub async fn clear_database(&self) -> Result<()> {
+        sqlx::query("DELETE FROM patches").execute(&self.pool).await?;
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn save_patch(&self, patch: &PatchData) -> Result<()> {
         let content = PatchJsonContent {
             champions: patch.champions.clone(),
@@ -45,7 +51,6 @@ impl Database {
         };
         let json_data = serde_json::to_string(&content)?;
         
-        // Конвертируем DateTime в строку для SQL
         let date_str = patch.fetched_at.to_rfc3339();
         
         sqlx::query(
@@ -134,5 +139,62 @@ impl Database {
             });
         }
         Ok(result)
+    }
+
+    async fn get_history_for_category(
+        &self,
+        name: &str,
+        category: crate::models::PatchCategory,
+    ) -> Result<Vec<crate::ChampionHistoryEntry>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT version, data_json, fetched_at FROM patches ORDER BY fetched_at DESC LIMIT 20",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut history = Vec::new();
+        let search = name.to_lowercase();
+
+        for (ver, data, date_str) in rows {
+            let content: PatchJsonContent = match serde_json::from_str(&data) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let date = chrono::DateTime::parse_from_rfc3339(&date_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+
+            for note in content.patch_notes {
+                if note.category == category
+                    && (note.id.to_lowercase() == search || note.title.to_lowercase() == search)
+                {
+                    history.push(crate::ChampionHistoryEntry {
+                        patch_version: ver.clone(),
+                        date,
+                        change: note,
+                    });
+                }
+            }
+        }
+        history.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(history)
+    }
+
+    pub async fn get_champion_history(&self, champion_name: &str) -> Result<Vec<crate::ChampionHistoryEntry>> {
+        self
+            .get_history_for_category(champion_name, crate::models::PatchCategory::Champions)
+            .await
+    }
+
+    pub async fn get_item_history(&self, item_name: &str) -> Result<Vec<crate::ChampionHistoryEntry>> {
+        self
+            .get_history_for_category(item_name, crate::models::PatchCategory::ItemsRunes)
+            .await
+    }
+
+    pub async fn get_rune_history(&self, rune_name: &str) -> Result<Vec<crate::ChampionHistoryEntry>> {
+        self
+            .get_history_for_category(rune_name, crate::models::PatchCategory::ItemsRunes)
+            .await
     }
 }
