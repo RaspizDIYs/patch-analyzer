@@ -50,6 +50,7 @@ pub struct TierEntry {
     pub buffs: u32,
     pub nerfs: u32,
     pub adjusted: u32,
+    pub icon_url: Option<String>,
 }
 
 fn analyze_change_trend_backend(text: &str) -> i32 {
@@ -320,7 +321,13 @@ async fn get_tier_list(
                 buffs: 0,
                 nerfs: 0,
                 adjusted: 0,
+                icon_url: None,
             });
+
+            // Сохраняем иконку из патч-нотов (берем последнюю найденную)
+            if let Some(ref icon) = note.image_url {
+                entry.icon_url = Some(icon.clone());
+            }
 
             for block in &note.details {
                 for change in &block.changes {

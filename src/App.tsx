@@ -107,7 +107,7 @@ interface ChampionListItem { name: string; name_en: string; icon_url: string; }
 interface RuneListItem { name: string; nameEn: string; icon_url: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
 interface LogEntry { level: string; message: string; timestamp: string; }
-interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; }
+interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; icon_url?: string | null; }
 
 function compareVersions(v1: string, v2: string) {
     const parse = (v: string) => v.split('.').map(n => parseInt(n, 10)).filter(n => !isNaN(n));
@@ -428,7 +428,10 @@ function TierListView() {
       );
       return { icon: c?.icon_url, name: c?.name || entry.name };
     }
-    // ItemsRunes -> решаем по DDragon что это
+    // ItemsRunes -> сначала используем иконку из патч-нотов, потом DDragon
+    if (entry.icon_url) {
+      return { icon: entry.icon_url, name: entry.name };
+    }
     if (entityType === "rune") {
       const r = allRunes.find(r =>
         r.name === entry.name || r.nameEn === entry.name
@@ -745,8 +748,10 @@ function ChampionHistoryView() {
     }
   }, [entityType, champion, selectedRune, selectedItem]);
 
-  // Fallback для иконок рун/предметов по названию из DDragon
-  const getFallbackIcon = (title: string | null) => {
+  // Fallback для иконок рун/предметов: сначала из патч-нотов, потом DDragon
+  const getFallbackIcon = (title: string | null, patchIcon?: string | null) => {
+    // Приоритет: иконка из патч-нотов
+    if (patchIcon) return patchIcon;
     if (!title) return null;
     const t = title.toLowerCase();
     if (entityType === "rune") {
@@ -778,11 +783,14 @@ function ChampionHistoryView() {
       const chronologicalHistory = [...history].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
 
       chronologicalHistory.forEach(h => {
+          // Приоритет иконки: сначала из change.image_url (для рун/предметов), потом из details
+          const mainIcon = h.change.image_url || null;
           if (h.change.details) {
               h.change.details.forEach(d => {
                   const key = d.title || "Основные показатели"; // Default key if null
                   if (!groups.has(key)) {
-                      groups.set(key, { icon: d.icon_url || null, rawChanges: [] });
+                      // Используем иконку из патч-нотов (change.image_url) или из деталей
+                      groups.set(key, { icon: mainIcon || d.icon_url || null, rawChanges: [] });
                   }
                   if (d.changes) {
                       d.changes.forEach(c => {
@@ -938,12 +946,19 @@ function ChampionHistoryView() {
                        className="w-16 h-16 rounded-full border-4 border-white shadow-md bg-white object-cover"
                      />
                    )}
-                   {entityType !== "champion" && history[history.length - 1]?.change.image_url && (
-                     <img
-                       src={cleanUrl(history[history.length - 1].change.image_url)}
-                       className="w-16 h-16 rounded-full border-4 border-white shadow-md bg-white object-cover"
-                     />
-                   )}
+                   {entityType !== "champion" && (() => {
+                     const lastChange = history[history.length - 1]?.change;
+                     const iconUrl = lastChange?.image_url || getFallbackIcon(
+                       entityType === "rune" ? selectedRune?.name : selectedItem?.name || null
+                     );
+                     return iconUrl ? (
+                       <img
+                         src={cleanUrl(iconUrl)}
+                         className="w-16 h-16 rounded-full border-4 border-white shadow-md bg-white object-cover"
+                         alt=""
+                       />
+                     ) : null;
+                   })()}
                    <div>
                        <h3 className="text-2xl font-bold text-slate-900">
                          {entityType === "champion" && champion && champion.name}
@@ -963,7 +978,7 @@ function ChampionHistoryView() {
                                   {(() => {
                                     const icon = group.icon || getFallbackIcon(group.title);
                                     return icon ? (
-                                      <img src={cleanUrl(icon)} className="w-6 h-6 rounded bg-slate-100" />
+                                      <img src={cleanUrl(icon)} className="w-6 h-6 rounded bg-slate-100" alt="" />
                                     ) : null;
                                   })()}
                                   <h4 className="font-bold text-slate-800">{group.title}</h4>
