@@ -4,9 +4,20 @@
  
 @layer base {
   :root {
+    /* Светлая тема по умолчанию */
+    --background: 210 40% 98%;
+    --foreground: 222.2 84% 4.9%;
+    --primary: 217.2 91.2% 59.8%;
+  }
+
+  body.theme-light {
+    --background: 210 40% 98%;
+    --foreground: 222.2 84% 4.9%;
+  }
+
+  body.theme-dark {
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
   }
  
   body {

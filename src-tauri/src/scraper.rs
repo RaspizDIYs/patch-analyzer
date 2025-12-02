@@ -78,11 +78,74 @@ impl Scraper {
         Ok(champs)
     }
 
-    pub async fn fetch_available_patches(&self) -> Result<Vec<String>> {
-        let url = "https://www.leagueoflegends.com/ru-ru/news/tags/patch-notes/";
-        let mut patches = Vec::new();
+    pub async fn fetch_latest_ddragon_version(&self) -> Result<Option<String>> {
+        let url = "https://ddragon.leagueoflegends.com/api/versions.json";
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                if let Ok(versions) = resp.json::<Vec<String>>().await {
+                    if let Some(latest) = versions.first() {
+                        return Ok(Some(latest.clone()));
+                    }
+                }
+                Ok(None)
+            },
+            Err(_) => Ok(None)
+        }
+    }
+
+    pub async fn check_patch_notes_exists(&self, version: &str) -> bool {
+        // Проверяем на русской странице тегов патч-нотов
+        let ru_url = "https://www.leagueoflegends.com/ru-ru/news/tags/patch-notes/";
+        if let Ok(resp) = self.client.get(ru_url).send().await {
+            if let Ok(text) = resp.text().await {
+                let document = Html::parse_document(&text);
+                let link_selector = Selector::parse("a[href*='patch-']").unwrap();
+                let re = Regex::new(r"patch-(\d+)-(\d+)-notes").unwrap();
+                
+                for link in document.select(&link_selector) {
+                    if let Some(href) = link.value().attr("href") {
+                        if let Some(caps) = re.captures(href) {
+                            let patch_version = format!("{}.{}", &caps[1], &caps[2]);
+                            if patch_version == version {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
-        if let Ok(resp) = self.client.get(url).send().await {
+        // Проверяем на английской странице тегов патч-нотов
+        let en_url = "https://www.leagueoflegends.com/en-us/news/tags/patch-notes/";
+        if let Ok(resp) = self.client.get(en_url).send().await {
+            if let Ok(text) = resp.text().await {
+                let document = Html::parse_document(&text);
+                let link_selector = Selector::parse("a[href*='patch-']").unwrap();
+                let re = Regex::new(r"patch-(\d+)-(\d+)-notes").unwrap();
+                
+                for link in document.select(&link_selector) {
+                    if let Some(href) = link.value().attr("href") {
+                        if let Some(caps) = re.captures(href) {
+                            let patch_version = format!("{}.{}", &caps[1], &caps[2]);
+                            if patch_version == version {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        false
+    }
+
+    pub async fn fetch_available_patches(&self) -> Result<Vec<String>> {
+        let mut patches = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        
+        // Парсим русскую страницу патч-нотов
+        let ru_url = "https://www.leagueoflegends.com/ru-ru/news/tags/patch-notes/";
+        if let Ok(resp) = self.client.get(ru_url).send().await {
             if let Ok(text) = resp.text().await {
                 let document = Html::parse_document(&text);
                 let link_selector = Selector::parse("a[href*='patch-']").unwrap();
@@ -92,7 +155,30 @@ impl Scraper {
                     if let Some(href) = link.value().attr("href") {
                         if let Some(caps) = re.captures(href) {
                             let version = format!("{}.{}", &caps[1], &caps[2]);
-                            if !patches.contains(&version) {
+                            if !seen.contains(&version) {
+                                seen.insert(version.clone());
+                                patches.push(version);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Парсим английскую страницу патч-нотов (для полноты)
+        let en_url = "https://www.leagueoflegends.com/en-us/news/tags/patch-notes/";
+        if let Ok(resp) = self.client.get(en_url).send().await {
+            if let Ok(text) = resp.text().await {
+                let document = Html::parse_document(&text);
+                let link_selector = Selector::parse("a[href*='patch-']").unwrap();
+                let re = Regex::new(r"patch-(\d+)-(\d+)-notes").unwrap();
+                
+                for link in document.select(&link_selector) {
+                    if let Some(href) = link.value().attr("href") {
+                        if let Some(caps) = re.captures(href) {
+                            let version = format!("{}.{}", &caps[1], &caps[2]);
+                            if !seen.contains(&version) {
+                                seen.insert(version.clone());
                                 patches.push(version);
                             }
                         }
@@ -109,7 +195,8 @@ impl Scraper {
         ];
 
         for p in fallback_patches {
-            if !patches.contains(&p.to_string()) {
+            if !seen.contains(&p.to_string()) {
+                seen.insert(p.to_string());
                 patches.push(p.to_string());
             }
         }

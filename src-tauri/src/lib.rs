@@ -203,6 +203,55 @@ async fn check_patches_exist(versions: Vec<String>, state: tauri::State<'_, Mute
 }
 
 #[tauri::command]
+async fn get_latest_ddragon_version(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<String>, String> {
+    let state = state.lock().await;
+    state.scraper.fetch_latest_ddragon_version().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_patch_notes_exists(version: String, state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, String> {
+    let state = state.lock().await;
+    Ok(state.scraper.check_patch_notes_exists(&version).await)
+}
+
+#[tauri::command]
+async fn get_fallback_rune_icon(style_key: String, rune_key: String) -> Result<Option<String>, String> {
+    use std::path::PathBuf;
+    use std::fs;
+    
+    if style_key.is_empty() || rune_key.is_empty() {
+        return Ok(None);
+    }
+    
+    // Путь относительно директории src-tauri
+    let mut resource_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    resource_path.push("arch");
+    resource_path.push("Styles");
+    resource_path.push(&style_key);
+    resource_path.push(&rune_key);
+    
+    // Пробуем найти PNG файл в этой папке
+    if let Ok(entries) = fs::read_dir(&resource_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext.to_string_lossy().to_lowercase() == "png" {
+                        // Возвращаем путь как file:// URL для локальных файлов
+                        if let Some(path_str) = path.to_str() {
+                            let url = format!("file:///{}", path_str.replace('\\', "/"));
+                            return Ok(Some(url));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(None)
+}
+
+#[tauri::command]
 async fn get_available_patches(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let state = state.lock().await;
     state.scraper.fetch_available_patches().await.map_err(|e| e.to_string())
@@ -481,7 +530,10 @@ pub fn run() {
             get_tier_list,
             sync_patch_history,
             clear_database,
-            check_patches_exist
+            check_patches_exist,
+            get_latest_ddragon_version,
+            check_patch_notes_exists,
+            get_fallback_rune_icon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
