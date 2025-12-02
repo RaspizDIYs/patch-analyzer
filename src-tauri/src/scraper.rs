@@ -24,7 +24,7 @@ impl Scraper {
         Ok(Self { client })
     }
 
-    pub async fn fetch_all_champions_ddragon(&self) -> Result<Vec<(String, String, String)>> {
+    pub async fn fetch_all_champions_ddragon(&self) -> Result<Vec<(String, String, String, String, String)>> {
         let ver_url = "https://ddragon.leagueoflegends.com/api/versions.json";
         let versions: Vec<String> = self.client.get(ver_url).send().await?.json().await?;
         let latest = versions.first().map(|s| s.as_str()).unwrap_or("14.23.1");
@@ -66,11 +66,17 @@ impl Scraper {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    let champion_key = val_ru
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let icon_url = format!(
                         "https://ddragon.leagueoflegends.com/cdn/{}/img/champion/{}.png",
                         latest, id
                     );
-                    champs.push((name_ru, name_en, icon_url));
+                    // Возвращаем: (name_ru, name_en, icon_url, champion_key, champion_id)
+                    champs.push((name_ru, name_en, icon_url, champion_key, id));
                 }
             }
         }
@@ -140,65 +146,31 @@ impl Scraper {
     }
 
     pub async fn fetch_available_patches(&self) -> Result<Vec<String>> {
+        // Используем патчи из DDragon для согласования с форматом статистики
+        let ver_url = "https://ddragon.leagueoflegends.com/api/versions.json";
         let mut patches = Vec::new();
-        let mut seen = std::collections::HashSet::new();
         
-        // Парсим русскую страницу патч-нотов
-        let ru_url = "https://www.leagueoflegends.com/ru-ru/news/tags/patch-notes/";
-        if let Ok(resp) = self.client.get(ru_url).send().await {
-            if let Ok(text) = resp.text().await {
-                let document = Html::parse_document(&text);
-                let link_selector = Selector::parse("a[href*='patch-']").unwrap();
-                let re = Regex::new(r"patch-(\d+)-(\d+)-notes").unwrap();
-                
-                for link in document.select(&link_selector) {
-                    if let Some(href) = link.value().attr("href") {
-                        if let Some(caps) = re.captures(href) {
-                            let version = format!("{}.{}", &caps[1], &caps[2]);
-                            if !seen.contains(&version) {
-                                seen.insert(version.clone());
-                                patches.push(version);
-                            }
+        if let Ok(resp) = self.client.get(ver_url).send().await {
+            if let Ok(versions) = resp.json::<Vec<String>>().await {
+                for version in versions {
+                    // Преобразуем формат: 15.23.1 -> 15.23
+                    let parts: Vec<&str> = version.split('.').collect();
+                    if parts.len() >= 2 {
+                        let patch = format!("{}.{}", parts[0], parts[1]);
+                        if !patches.contains(&patch) {
+                            patches.push(patch);
                         }
                     }
                 }
             }
         }
         
-        // Парсим английскую страницу патч-нотов (для полноты)
-        let en_url = "https://www.leagueoflegends.com/en-us/news/tags/patch-notes/";
-        if let Ok(resp) = self.client.get(en_url).send().await {
-            if let Ok(text) = resp.text().await {
-                let document = Html::parse_document(&text);
-                let link_selector = Selector::parse("a[href*='patch-']").unwrap();
-                let re = Regex::new(r"patch-(\d+)-(\d+)-notes").unwrap();
-                
-                for link in document.select(&link_selector) {
-                    if let Some(href) = link.value().attr("href") {
-                        if let Some(caps) = re.captures(href) {
-                            let version = format!("{}.{}", &caps[1], &caps[2]);
-                            if !seen.contains(&version) {
-                                seen.insert(version.clone());
-                                patches.push(version);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        let fallback_patches = vec![
-            "25.23", "25.22", "25.21", "25.20", "25.19", 
-            "25.18", "25.17", "25.16", "25.15", "25.14", 
-            "25.13", "25.12", "25.11", "25.10", "25.09", 
-            "25.08", "25.07", "25.06", "25.05", "25.04"
-        ];
-
-        for p in fallback_patches {
-            if !seen.contains(&p.to_string()) {
-                seen.insert(p.to_string());
-                patches.push(p.to_string());
-            }
+        // Если DDragon недоступен, используем fallback
+        if patches.is_empty() {
+            patches = vec![
+                "15.23".to_string(), "15.22".to_string(), "15.21".to_string(), "15.20".to_string(), "15.19".to_string(), 
+                "15.18".to_string(), "15.17".to_string(), "15.16".to_string(), "15.15".to_string(), "15.14".to_string()
+            ];
         }
 
         patches.sort_by(|a, b| {
@@ -211,6 +183,9 @@ impl Scraper {
 
             if major_a != major_b { major_b.cmp(&major_a) } else { minor_b.cmp(&minor_a) }
         });
+
+        // Ограничиваем до 20 последних патчей
+        patches.truncate(20);
 
         Ok(patches)
     }

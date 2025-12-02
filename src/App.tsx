@@ -103,7 +103,7 @@ interface ChangeBlock { title: string | null; icon_url: string | null; changes: 
 interface PatchNoteEntry { id: string; title: string; image_url?: string; category: string; change_type: string; summary: string; details: ChangeBlock[]; }
 interface MetaAnalysisDiff { champion_name: string; role: string; win_rate_diff: number; pick_rate_diff: number; predicted_change: string | null; champion_image_url?: string; }
 interface ChampionHistoryEntry { patch_version: string; date: string; change: PatchNoteEntry; }
-interface ChampionListItem { name: string; name_en: string; icon_url: string; }
+interface ChampionListItem { name: string; name_en: string; icon_url: string; key: string; id: string; }
 interface RuneListItem { id: string; name: string; nameEn: string; icon_url: string; key?: string; style?: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
 interface LogEntry { level: string; message: string; timestamp: string; }
@@ -126,7 +126,7 @@ type ThemeOption = "light" | "dark" | "system";
 function App() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [version, setVersion] = useState("25.23"); 
+  const [version, setVersion] = useState("15.23"); 
   const [patchesList, setPatchesList] = useState<string[]>([]);
   const [patchData, setPatchData] = useState<PatchData | null>(null);
   const [diffs, setDiffs] = useState<MetaAnalysisDiff[]>([]);
@@ -509,8 +509,68 @@ function App() {
           </Routes>
         </ErrorBoundary>
       </main>
+      <SupabaseStatusIndicator />
     </div>
     </ErrorBoundary>
+  );
+}
+
+function SupabaseStatusIndicator() {
+  const [status, setStatus] = useState<"active" | "inactive" | "error" | "checking">("checking");
+
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const result = await invoke<boolean>("check_supabase_status");
+        setStatus(result ? "active" : "inactive");
+      } catch (error) {
+        setStatus("error");
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const getStatusColor = () => {
+    switch (status) {
+      case "active":
+        return "bg-green-500";
+      case "error":
+        return "bg-red-500";
+      case "inactive":
+      case "checking":
+      default:
+        return "bg-gray-400";
+    }
+  };
+
+  const isPulsing = status === "active";
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-2 px-3 py-2 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-50">
+      <div className="relative">
+        <div
+          className={cn(
+            "w-3 h-3 rounded-full",
+            getStatusColor(),
+            isPulsing && "animate-pulse"
+          )}
+        />
+        {isPulsing && (
+          <div
+            className={cn(
+              "absolute inset-0 rounded-full bg-green-500",
+              "animate-ping opacity-75"
+            )}
+          />
+        )}
+      </div>
+      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+        data
+      </span>
+    </div>
   );
 }
 
@@ -1818,12 +1878,81 @@ function ChampionIcon({ url, name, size = "md" }: { url?: string, name: string, 
 }
 
 function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
-  if (diffs.length === 0) return <EmptyState message="Нет данных статистики." />;
+  const [apiData, setApiData] = useState<MetaAnalysisDiff[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [useApi, setUseApi] = useState(false);
+  const location = useLocation();
+  
+  useEffect(() => {
+    const loadApiData = async () => {
+      setLoading(true);
+      try {
+        const patchesList = await invoke<string[]>("get_available_patches");
+        console.log("[MetaChangesView] Available patches:", patchesList);
+        if (patchesList.length >= 2) {
+          const currentPatch = patchesList[0];
+          const previousPatch = patchesList[1];
+          console.log("[MetaChangesView] Comparing:", { from: previousPatch, to: currentPatch });
+          
+          const metaChanges = await invoke<Array<{
+            champion_id: string;
+            win_rate_diff: number;
+            pick_rate_diff: number;
+            ban_rate_diff: number;
+          }>>("get_meta_changes_from_api", {
+            fromPatch: previousPatch,
+            toPatch: currentPatch,
+            region: "ru",
+            tier: null
+          });
+          
+          console.log("[MetaChangesView] Meta changes received:", metaChanges);
+          console.log("[MetaChangesView] First change sample:", metaChanges[0]);
+          
+          if (metaChanges && metaChanges.length > 0) {
+            const champions = await invoke<ChampionListItem[]>("get_all_champions");
+            const championMap = new Map(champions.map(c => [c.name_en.toLowerCase(), c]));
+            
+            const transformed = metaChanges.map(change => {
+              const champion = championMap.get(change.champion_id.toLowerCase());
+              return {
+                champion_name: champion?.name || change.champion_id,
+                role: "ALL",
+                win_rate_diff: change.win_rate_diff,
+                pick_rate_diff: change.pick_rate_diff,
+                predicted_change: null,
+                champion_image_url: champion?.icon_url
+              } as MetaAnalysisDiff;
+            });
+            
+            setApiData(transformed);
+            setUseApi(true);
+          }
+        }
+      } catch (error: any) {
+        console.error("Failed to load API data:", error);
+        setUseApi(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadApiData();
+  }, [location.pathname]);
+  
+  const displayData = useApi ? apiData : diffs;
+  
+  if (loading) {
+    return <EmptyState message="Загрузка данных статистики..." />;
+  }
+  
+  if (displayData.length === 0) return <EmptyState message="Нет данных статистики." />;
+  
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">Сдвиги Меты</h2>
       <div className="grid gap-3">
-        {diffs.map((diff, idx) => (
+        {displayData.map((diff, idx) => (
           <div
             key={idx}
             className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 flex items-center justify-between shadow-sm hover:border-blue-200 dark:hover:border-slate-500 transition-colors text-slate-900 dark:text-slate-50"
@@ -1850,8 +1979,82 @@ function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
 }
 
 function PredictionsView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
-  const predicted = diffs.filter(d => d.predicted_change);
+  const [apiData, setApiData] = useState<MetaAnalysisDiff[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [useApi, setUseApi] = useState(false);
+  const location = useLocation();
+  
+  useEffect(() => {
+    const loadApiData = async () => {
+      setLoading(true);
+      try {
+        const patchesList = await invoke<string[]>("get_available_patches");
+        console.log("[PredictionsView] Available patches:", patchesList);
+        if (patchesList.length >= 2) {
+          const currentPatch = patchesList[0];
+          const previousPatch = patchesList[1];
+          console.log("[PredictionsView] Comparing:", { from: previousPatch, to: currentPatch });
+          
+          const metaChanges = await invoke<Array<{
+            champion_id: string;
+            win_rate_diff: number;
+            pick_rate_diff: number;
+            ban_rate_diff: number;
+          }>>("get_meta_changes_from_api", {
+            fromPatch: previousPatch,
+            toPatch: currentPatch,
+            region: "ru",
+            tier: null
+          });
+          
+          console.log("[PredictionsView] Meta changes received:", metaChanges);
+          console.log("[PredictionsView] First change sample:", metaChanges[0]);
+          
+          if (metaChanges && metaChanges.length > 0) {
+            const champions = await invoke<ChampionListItem[]>("get_all_champions");
+            // Создаем маппинг: champion_id (числовой key) -> champion data
+            const championMapByKey = new Map(champions.map(c => [c.key, c]));
+            // Также маппинг по строковому ID (на случай если champion_id уже строковый)
+            const championMapById = new Map(champions.map(c => [c.id.toLowerCase(), c]));
+            
+            const transformed = metaChanges.map(change => {
+              // Пробуем найти по числовому key или строковому id
+              const champion = championMapByKey.get(change.champion_id) || 
+                              championMapById.get(change.champion_id.toLowerCase());
+              return {
+                champion_name: champion?.name || change.champion_id,
+                role: "ALL",
+                win_rate_diff: change.win_rate_diff,
+                pick_rate_diff: change.pick_rate_diff,
+                predicted_change: null,
+                champion_image_url: champion?.icon_url
+              } as MetaAnalysisDiff;
+            });
+            
+            setApiData(transformed);
+            setUseApi(true);
+          }
+        }
+      } catch (error: any) {
+        console.error("Failed to load API data:", error);
+        setUseApi(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadApiData();
+  }, [location.pathname]);
+  
+  const displayData = useApi ? apiData : diffs;
+  const predicted = displayData.filter(d => d.predicted_change);
+  
+  if (loading) {
+    return <EmptyState message="Загрузка данных статистики..." />;
+  }
+  
   if (predicted.length === 0) return <EmptyState message="Нет прогнозов." />;
+  
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">Прогноз vs Реальность</h2>

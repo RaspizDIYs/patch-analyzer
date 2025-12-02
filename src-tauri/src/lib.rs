@@ -7,6 +7,7 @@ use crate::db::Database;
 use crate::scraper::Scraper;
 use crate::analyzer::Analyzer;
 use crate::models::{PatchData, MetaAnalysisDiff, PatchNoteEntry, PatchCategory};
+use crate::supabase_client::{SupabaseClient, ChampionStatsAggregated, MetaChange};
 use std::collections::{HashSet, HashMap};
 use serde::Serialize;
 use regex::Regex;
@@ -15,11 +16,13 @@ pub mod models;
 pub mod db;
 pub mod scraper;
 pub mod analyzer;
+pub mod supabase_client;
 
 struct AppState {
     db: Database,
     scraper: Scraper,
     tier_cache: Option<(String, Vec<TierEntry>)>,
+    supabase: Option<SupabaseClient>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -41,6 +44,8 @@ pub struct ChampionListItem {
     name: String,
     name_en: String,
     icon_url: String,
+    key: String,
+    id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -314,7 +319,13 @@ async fn get_all_champions(state: tauri::State<'_, Mutex<AppState>>) -> Result<V
         Ok(list) => Ok(
             list
                 .into_iter()
-                .map(|(name, name_en, icon_url)| ChampionListItem { name, name_en, icon_url })
+                .map(|(name, name_en, icon_url, key, id)| ChampionListItem { 
+                    name, 
+                    name_en, 
+                    icon_url,
+                    key,
+                    id
+                })
                 .collect(),
         ),
         Err(e) => Err(e.to_string())
@@ -471,14 +482,94 @@ async fn clear_database(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), 
     Ok(())
 }
 
+#[tauri::command]
+async fn get_champion_stats_from_api(
+    champion_id: String,
+    patch: String,
+    region: String,
+    tier: Option<String>,
+    role: Option<String>,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<ChampionStatsAggregated>, String> {
+    let state = state.lock().await;
+    
+    if let Some(ref supabase) = state.supabase {
+        supabase
+            .get_champion_stats(
+                &champion_id,
+                &patch,
+                &region,
+                tier.as_deref(),
+                role.as_deref(),
+            )
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Err("Supabase client not configured".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_meta_changes_from_api(
+    from_patch: String,
+    to_patch: String,
+    region: String,
+    tier: Option<String>,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<Vec<MetaChange>, String> {
+    let state = state.lock().await;
+    
+    if let Some(ref supabase) = state.supabase {
+        supabase
+            .get_meta_changes(&from_patch, &to_patch, &region, tier.as_deref())
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Err("Supabase client not configured".to_string())
+    }
+}
+
+#[tauri::command]
+async fn check_supabase_status(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<bool, String> {
+    let state = state.lock().await;
+    
+    if let Some(ref supabase) = state.supabase {
+        supabase
+            .check_status()
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(false)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db = tokio::runtime::Runtime::new().unwrap().block_on(Database::new()).expect("Failed to init DB");
     let scraper = Scraper::new().expect("Failed to init Scraper");
+    
+    // Инициализация Supabase клиента
+    // Значения по умолчанию встроены в бинарник для production
+    // Можно переопределить через переменные окружения при запуске
+    const DEFAULT_SUPABASE_URL: &str = "https://pnrixpwwjasjizuamuwu.supabase.co";
+    const DEFAULT_SUPABASE_ANON_KEY: &str = "sb_publishable_4QfI6VNJUKkjP5pY-GEhvw_SNbZC1vI";
+    
+    let supabase_url = std::env::var("SUPABASE_URL")
+        .unwrap_or_else(|_| DEFAULT_SUPABASE_URL.to_string());
+    let supabase_key = std::env::var("SUPABASE_ANON_KEY")
+        .unwrap_or_else(|_| DEFAULT_SUPABASE_ANON_KEY.to_string());
+    let supabase = Some(SupabaseClient::new(supabase_url, supabase_key));
 
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(Mutex::new(AppState { db, scraper, tier_cache: None }));
+            app.manage(Mutex::new(AppState { 
+                db, 
+                scraper, 
+                tier_cache: None,
+                supabase
+            }));
             
             let menu = Menu::with_items(app, &[
                 &MenuItem::with_id(app, "Show", "Show", true, None::<&str>)?,
@@ -533,7 +624,10 @@ pub fn run() {
             check_patches_exist,
             get_latest_ddragon_version,
             check_patch_notes_exists,
-            get_fallback_rune_icon
+            get_fallback_rune_icon,
+            get_champion_stats_from_api,
+            get_meta_changes_from_api,
+            check_supabase_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

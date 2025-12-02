@@ -67,3 +67,4 @@ npm run tauri:build
 
 Формат версии: `MAJOR.MINOR.PATCH` (например, 1.0.0)
 
+

@@ -33,6 +33,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Переменные окружения для Supabase (опционально, есть значения по умолчанию в коде)
+          SUPABASE_URL: https://pnrixpwwjasjizuamuwu.supabase.co
+          SUPABASE_ANON_KEY: sb_publishable_4QfI6VNJUKkjP5pY-GEhvw_SNbZC1vI
         with:
           projectPath: .
           tagName: ${{ github.ref_name }}
