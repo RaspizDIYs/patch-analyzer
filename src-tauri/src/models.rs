@@ -70,7 +70,9 @@ pub enum ChangeType {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub enum PatchCategory {
     Champions,
-    ItemsRunes,
+    Items,
+    Runes,
+    ItemsRunes, // Legacy для обратной совместимости
     Modes,
     Skins,
     Systems,

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
-import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft } from "lucide-react";
+import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, X, Circle } from "lucide-react";
 import { cn } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
@@ -129,12 +129,17 @@ function App() {
   const [patchData, setPatchData] = useState<PatchData | null>(null);
   const [diffs, setDiffs] = useState<MetaAnalysisDiff[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [patchesStatus, setPatchesStatus] = useState<Record<string, boolean>>({});
   const location = useLocation();
 
   useEffect(() => {
     invoke<string[]>("get_available_patches").then(list => {
         setPatchesList(list);
         if (list.length > 0) setVersion(list[0]);
+        // Проверяем наличие патчей в БД
+        invoke<Record<string, boolean>>("check_patches_exist", { versions: list }).then(status => {
+            setPatchesStatus(status);
+        }).catch(console.error);
     }).catch(console.error);
 
     const unlisten = listen<LogEntry>("log_message", (event) => {
@@ -170,6 +175,12 @@ function App() {
           await invoke("sync_patch_history");
           toast.success("Все патчи загружены!");
           loadData(version, false);
+          // Обновляем статус патчей
+          if (patchesList.length > 0) {
+              invoke<Record<string, boolean>>("check_patches_exist", { versions: patchesList }).then(status => {
+                  setPatchesStatus(status);
+              }).catch(console.error);
+          }
       } catch (e) {
           toast.error("Ошибка синхронизации: " + String(e));
       } finally {
@@ -221,13 +232,6 @@ function App() {
                 {syncing ? "Загрузка..." : "Скачать патчи"}
              </button>
             <div className="h-6 w-px bg-slate-200"></div>
-            
-            <CustomPatchSelect 
-                value={version} 
-                options={patchesList} 
-                onChange={setVersion} 
-                loading={loading}
-            />
             <button 
                onClick={async () => {
                   if (confirm("Вы уверены, что хотите очистить локальную базу данных? Это исправит ошибки с данными.")) {
@@ -235,10 +239,6 @@ function App() {
                           await invoke("clear_database"); 
                           window.location.reload();
                       } catch (e) {
-                          // If command not found (yet), manual clear via backend needed?
-                          // Actually we can just ask backend to delete the file via a command if we add it
-                          // For now, just handleSyncAll is the main way to refresh.
-                          // We will assume the user manually deleted or I did it via tool.
                           toast.info("Функция очистки в разработке. Пожалуйста, перезапустите приложение.");
                       }
                   }
@@ -253,7 +253,7 @@ function App() {
       <main className="flex-1 max-w-6xl w-full mx-auto p-6">
         <ErrorBoundary>
           <Routes>
-            <Route path="/" element={<PatchReleaseView data={patchData} />} />
+            <Route path="/" element={<PatchReleaseView data={patchData} version={version} patchesList={patchesList} onVersionChange={setVersion} loading={loading} patchesStatus={patchesStatus} />} />
             <Route path="/meta" element={<MetaChangesView diffs={diffs} />} />
             <Route path="/predictions" element={<PredictionsView diffs={diffs} />} />
             <Route path="/tier" element={<TierListView />} />
@@ -267,7 +267,7 @@ function App() {
   );
 }
 
-function CustomPatchSelect({ value, options, onChange, loading }: { value: string, options: string[], onChange: (v: string) => void, loading: boolean }) {
+function CustomPatchSelect({ value, options, onChange, loading, patchesStatus }: { value: string, options: string[], onChange: (v: string) => void, loading: boolean, patchesStatus?: Record<string, boolean> }) {
     const [isOpen, setIsOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
 
@@ -287,17 +287,30 @@ function CustomPatchSelect({ value, options, onChange, loading }: { value: strin
                 <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
             </button>
             {isOpen && (
-                <div className="absolute top-full right-0 mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in fade-in zoom-in-95 duration-200">
-                    {options.map(opt => (
-                        <div 
-                            key={opt} 
-                            onClick={() => { onChange(opt); setIsOpen(false); }}
-                            className={cn("px-3 py-2 rounded-lg text-sm font-medium cursor-pointer flex items-center justify-between transition-colors", opt === value ? "bg-blue-50 text-blue-600" : "hover:bg-slate-50 text-slate-700")}
-                        >
-                            Patch {opt}
-                            {opt === value && <Check className="w-3 h-3" />}
-                        </div>
-                    ))}
+                <div className="absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in fade-in zoom-in-95 duration-200">
+                    {options.map(opt => {
+                        const exists = patchesStatus?.[opt] ?? false;
+                        const isCurrent = opt === value;
+                        return (
+                            <div 
+                                key={opt} 
+                                onClick={() => { onChange(opt); setIsOpen(false); }}
+                                className={cn("px-3 py-2 rounded-lg text-sm font-medium cursor-pointer flex items-center justify-between transition-colors", isCurrent ? "bg-blue-50 text-blue-600" : "hover:bg-slate-50 text-slate-700")}
+                            >
+                                <div className="flex items-center gap-2">
+                                    {isCurrent ? (
+                                        <Circle className="w-3 h-3 text-green-500 fill-green-500" />
+                                    ) : exists ? (
+                                        <Check className="w-3 h-3 text-green-500" />
+                                    ) : (
+                                        <X className="w-3 h-3 text-red-500" />
+                                    )}
+                                    <span>Patch {opt}</span>
+                                </div>
+                                {isCurrent && <Check className="w-3 h-3" />}
+                            </div>
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -418,7 +431,9 @@ function TierListView() {
 
   const filtered = data.filter(entry => {
     if (entityType === "champion") return entry.category === "Champions";
-    return entry.category === "ItemsRunes";
+    if (entityType === "rune") return entry.category === "Runes" || entry.category === "ItemsRunes";
+    if (entityType === "item") return entry.category === "Items" || entry.category === "ItemsRunes";
+    return false;
   });
 
   const resolveIconAndName = (entry: TierEntry) => {
@@ -497,10 +512,11 @@ function TierListView() {
       {!loading && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 bg-slate-50 border-b border-slate-200 px-4 py-2">
-            <div className="col-span-6">Сущность</div>
+            <div className="col-span-5">Сущность</div>
             <div className="col-span-2 text-center text-emerald-700">↑ Buff</div>
             <div className="col-span-2 text-center text-red-700">↓ Nerf</div>
             <div className="col-span-2 text-center text-slate-600">⇄ Изм.</div>
+            <div className="col-span-1 text-center text-slate-500">Score</div>
           </div>
           <div className="divide-y divide-slate-100">
             {filtered.map((entry, idx) => {
@@ -510,14 +526,15 @@ function TierListView() {
                 <button
                   key={entry.name + entry.category + idx}
                   onClick={() => handleOpenHistory(entry)}
-                  className="w-full flex items-center px-4 py-2 text-sm hover:bg-blue-50/60 transition-colors"
+                  className="w-full grid grid-cols-12 items-center px-4 py-2 text-sm hover:bg-blue-50/60 transition-colors"
                 >
-                  <div className="flex items-center gap-3 col-span-6 flex-1">
+                  <div className="col-span-5 flex items-center gap-3">
                     <span className="w-6 text-[11px] text-slate-400 font-mono">#{idx + 1}</span>
                     {icon && (
                       <img
                         src={cleanUrl(icon)}
                         className="w-8 h-8 rounded-full border border-slate-200 bg-slate-100 object-cover"
+                        alt=""
                       />
                     )}
                     {!icon && (
@@ -527,16 +544,20 @@ function TierListView() {
                     )}
                     <span className="font-semibold text-slate-800">{name}</span>
                     <span className="ml-2 text-[11px] text-slate-400">
-                      {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
-                    </span>
-                    <span className="ml-auto text-[11px] font-mono text-slate-400">
-                      score {score >= 0 ? `+${score}` : score}
+                      {entry.category === "Champions" ? "Чемпион" : entry.category === "Runes" ? "Руна" : entry.category === "Items" ? "Предмет" : "Руна/Предмет"}
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-4 w-40 text-xs">
-                    <span className="text-center text-emerald-700 font-semibold">+{entry.buffs}</span>
-                    <span className="text-center text-red-700 font-semibold">-{entry.nerfs}</span>
-                    <span className="text-center text-slate-600 font-semibold">{entry.adjusted}</span>
+                  <div className="col-span-2 text-center text-emerald-700 font-semibold text-xs">
+                    {entry.buffs}
+                  </div>
+                  <div className="col-span-2 text-center text-red-700 font-semibold text-xs">
+                    {entry.nerfs}
+                  </div>
+                  <div className="col-span-2 text-center text-slate-600 font-semibold text-xs">
+                    {entry.adjusted}
+                  </div>
+                  <div className="col-span-1 text-center text-xs font-mono font-semibold" style={{ color: score > 0 ? '#059669' : score < 0 ? '#dc2626' : '#64748b' }}>
+                    {score > 0 ? `+${score}` : score < 0 ? score : "0"}
                   </div>
                 </button>
               );
@@ -1088,13 +1109,22 @@ function ChampionHistoryView() {
   );
 }
 
-function PatchReleaseView({ data }: { data: PatchData | null }) {
+function PatchReleaseView({ data, version, patchesList, onVersionChange, loading, patchesStatus }: { data: PatchData | null, version: string, patchesList: string[], onVersionChange: (v: string) => void, loading: boolean, patchesStatus?: Record<string, boolean> }) {
   if (!data) return <EmptyState />;
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex items-baseline justify-between border-b border-slate-100 pb-4">
         <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">Патч {data.version}</h2>
-        <span className="text-slate-500 text-xs font-medium bg-slate-100 px-3 py-1 rounded-full">Riot Games Official</span>
+        <div className="flex items-center gap-3">
+          <span className="text-slate-500 text-xs font-medium bg-slate-100 px-3 py-1 rounded-full">Riot Games Official</span>
+          <CustomPatchSelect 
+            value={version} 
+            options={patchesList} 
+            onChange={onVersionChange} 
+            loading={loading}
+            patchesStatus={patchesStatus}
+          />
+        </div>
       </div>
       <div className="grid gap-4">
         {data.patch_notes.length === 0 ? (

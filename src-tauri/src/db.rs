@@ -187,14 +187,70 @@ impl Database {
     }
 
     pub async fn get_item_history(&self, item_name: &str) -> Result<Vec<crate::ChampionHistoryEntry>> {
-        self
-            .get_history_for_category(item_name, crate::models::PatchCategory::ItemsRunes)
-            .await
+        let mut history = Vec::new();
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT version, data_json, fetched_at FROM patches ORDER BY fetched_at DESC LIMIT 20",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let search = item_name.to_lowercase();
+        for (ver, data, date_str) in rows {
+            let content: PatchJsonContent = match serde_json::from_str(&data) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let date = chrono::DateTime::parse_from_rfc3339(&date_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+
+            for note in content.patch_notes {
+                if (note.category == crate::models::PatchCategory::Items || note.category == crate::models::PatchCategory::ItemsRunes)
+                    && (note.id.to_lowercase() == search || note.title.to_lowercase() == search)
+                {
+                    history.push(crate::ChampionHistoryEntry {
+                        patch_version: ver.clone(),
+                        date,
+                        change: note,
+                    });
+                }
+            }
+        }
+        history.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(history)
     }
 
     pub async fn get_rune_history(&self, rune_name: &str) -> Result<Vec<crate::ChampionHistoryEntry>> {
-        self
-            .get_history_for_category(rune_name, crate::models::PatchCategory::ItemsRunes)
-            .await
+        let mut history = Vec::new();
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT version, data_json, fetched_at FROM patches ORDER BY fetched_at DESC LIMIT 20",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let search = rune_name.to_lowercase();
+        for (ver, data, date_str) in rows {
+            let content: PatchJsonContent = match serde_json::from_str(&data) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let date = chrono::DateTime::parse_from_rfc3339(&date_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+
+            for note in content.patch_notes {
+                if (note.category == crate::models::PatchCategory::Runes || note.category == crate::models::PatchCategory::ItemsRunes)
+                    && (note.id.to_lowercase() == search || note.title.to_lowercase() == search)
+                {
+                    history.push(crate::ChampionHistoryEntry {
+                        patch_version: ver.clone(),
+                        date,
+                        change: note,
+                    });
+                }
+            }
+        }
+        history.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(history)
     }
 }

@@ -199,7 +199,9 @@ impl Scraper {
                     if let Some(h2) = h2_el {
                         let id = h2.value().id().unwrap_or("").to_lowercase();
                         if id.contains("champion") { current_category = PatchCategory::Champions; }
-                        else if id.contains("item") || id.contains("rune") { current_category = PatchCategory::ItemsRunes; }
+                        else if id.contains("item") && !id.contains("rune") { current_category = PatchCategory::Items; }
+                        else if id.contains("rune") && !id.contains("item") { current_category = PatchCategory::Runes; }
+                        else if id.contains("item") || id.contains("rune") { current_category = PatchCategory::ItemsRunes; } // Fallback для legacy
                         else if id.contains("skin") || id.contains("chroma") { current_category = PatchCategory::Skins; }
                         else if id.contains("bug") { current_category = PatchCategory::BugFixes; }
                         else if id.contains("aram") || id.contains("arena") || id.contains("mode") { current_category = PatchCategory::Modes; }

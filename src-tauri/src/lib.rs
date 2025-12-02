@@ -192,6 +192,17 @@ async fn get_patch_by_version(version: String, app: AppHandle, state: tauri::Sta
 }
 
 #[tauri::command]
+async fn check_patches_exist(versions: Vec<String>, state: tauri::State<'_, Mutex<AppState>>) -> Result<HashMap<String, bool>, String> {
+    let state = state.lock().await;
+    let mut result = HashMap::new();
+    for version in versions {
+        let exists = state.db.get_patch(&version).await.map_err(|e| e.to_string())?.is_some();
+        result.insert(version, exists);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 async fn get_available_patches(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let state = state.lock().await;
     state.scraper.fetch_available_patches().await.map_err(|e| e.to_string())
@@ -275,7 +286,7 @@ async fn get_changed_itemsrunes_titles(
     let mut set: HashSet<String> = HashSet::new();
     for patch in patches {
         for note in patch.patch_notes {
-            if note.category == PatchCategory::ItemsRunes {
+            if note.category == PatchCategory::Items || note.category == PatchCategory::Runes || note.category == PatchCategory::ItemsRunes {
                 set.insert(note.title.clone());
             }
         }
@@ -469,7 +480,8 @@ pub fn run() {
             get_changed_itemsrunes_titles,
             get_tier_list,
             sync_patch_history,
-            clear_database
+            clear_database,
+            check_patches_exist
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
