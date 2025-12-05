@@ -1310,9 +1310,9 @@ function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], sele
                     {filtered.length === 0 ? (
                       <div className="p-4 text-center text-xs text-slate-400">Нет совпадений</div>
                     ) : (
-                      filtered.map(item => (
+                      filtered.map((item, idx) => (
                         <div
-                          key={item.id}
+                          key={item.name + idx}
                           onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
                           className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors"
                         >
