@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, Database as DbIcon } from "lucide-react";
-import { cn } from "./lib/utils";
+import { cn, mapPatchVersion } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
 function cleanUrl(url?: string | null) {
@@ -104,6 +104,7 @@ interface PatchNoteEntry { id: string; title: string; image_url?: string; catego
 interface MetaAnalysisDiff { champion_name: string; role: string; win_rate_diff: number; pick_rate_diff: number; predicted_change: string | null; champion_image_url?: string; }
 interface ChampionHistoryEntry { patch_version: string; date: string; change: PatchNoteEntry; }
 interface ChampionListItem { name: string; name_en: string; icon_url: string; }
+interface ChampionMeta { nameRu: string; nameEn: string; icon: string; }
 interface RuneListItem { name: string; nameEn: string; icon_url: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
 interface LogEntry { level: string; message: string; timestamp: string; }
@@ -137,6 +138,38 @@ import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 
+function IconSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string }[] }) {
+  const [open, setOpen] = useState(false);
+  const current = options.find(o => o.value === value);
+  return (
+    <div className="relative inline-block">
+      <button
+        className="flex items-center gap-2 bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
+        onClick={() => setOpen(!open)}
+        type="button"
+      >
+        <span className="text-slate-500">{label}</span>
+        {current?.icon && <img src={current.icon} alt={current.label} className="w-4 h-4" />}
+        <span>{current?.label || "Все"}</span>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full min-w-[140px] bg-white border border-slate-200 rounded-md shadow-sm">
+          {options.map(opt => (
+            <div
+              key={opt.value}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer"
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+            >
+              {opt.icon && <img src={opt.icon} alt={opt.label} className="w-4 h-4" />}
+              <span>{opt.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
     useEffect(() => {
         const initUpdater = async () => {
@@ -152,8 +185,11 @@ function App() {
                         await relaunch();
                     }
                 }
-            } catch (e) {
-                console.error('Failed to check for updates:', e);
+            } catch (e: unknown) {
+                const errorMsg = e instanceof Error ? e.message : String(e);
+                if (!errorMsg.includes("Could not fetch") && !errorMsg.includes("release JSON")) {
+                    console.error('Failed to check for updates:', e);
+                }
             }
         }
         initUpdater();
@@ -193,8 +229,13 @@ function App() {
         setPatchData(patchResult);
         if (force) toast.success(`Патч ${ver} обновлен`);
     } catch (error) {
-        console.error(error);
-        toast.error("Ошибка загрузки: " + String(error));
+        const errorMsg = String(error);
+        console.error("Load data error:", errorMsg);
+        const isSilentError = errorMsg === "1" || errorMsg === "101" || 
+                              errorMsg.trim() === "1" || errorMsg.trim() === "101";
+        if (!isSilentError) {
+            toast.error("Ошибка загрузки: " + errorMsg);
+        }
     } finally {
         setLoading(false);
     }
@@ -1427,7 +1468,7 @@ function ChampionIcon({ url, name, size = "md" }: { url?: string, name: string, 
 }
 
 function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
-  if (diffs.length === 0) return <EmptyState message="Нет данных статистики." />;
+  if (diffs.length === 0) return <EmptyState message="Находится в разработке, собираем статистику." />;
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-2xl font-bold text-slate-900">Сдвиги Меты</h2>
@@ -1457,7 +1498,7 @@ function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
 
 function PredictionsView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
   const predicted = diffs.filter(d => d.predicted_change);
-  if (predicted.length === 0) return <EmptyState message="Нет прогнозов." />;
+  if (predicted.length === 0) return <EmptyState message="Находится в разработке, собираем статистику." />;
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-2xl font-bold text-slate-900">Прогноз vs Реальность</h2>
@@ -1490,48 +1531,240 @@ function RealStatsView() {
     const [stats, setStats] = useState<SupabaseChampionStats[]>([]);
     const [patches, setPatches] = useState<string[]>([]);
     const [selectedPatch, setSelectedPatch] = useState<string>("");
+    const [selectedRole, setSelectedRole] = useState<string>("all");
+    const [selectedRegion, setSelectedRegion] = useState<string>("all");
+    const [selectedTier, setSelectedTier] = useState<string>("all");
     const [loading, setLoading] = useState(false);
     const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
+    const [champDict, setChampDict] = useState<Record<string, ChampionMeta>>({});
+    const [ddragonVersion, setDdragonVersion] = useState<string>("15.24.1");
+    const [prevStatsMap, setPrevStatsMap] = useState<Record<string, SupabaseChampionStats>>({});
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         invoke<string[]>("get_available_stats_patches").then(list => {
+            console.log("Available patches:", list);
             setPatches(list);
-            if (list.length > 0) setSelectedPatch(list[0]);
-        }).catch(e => toast.error("Ошибка получения списка патчей: " + String(e)));
+            setError(null);
+            if (list.length > 0) {
+                setSelectedPatch(list[0]);
+            } else {
+                console.warn("No patches available in stats");
+                setError("Нет доступных патчей в Supabase.");
+            }
+        }).catch(e => {
+            const errorMsg = String(e);
+            console.error("Error fetching patches:", errorMsg);
+            const isSilentError = errorMsg === "1" || errorMsg === "101" || 
+                                  errorMsg.trim() === "1" || errorMsg.trim() === "101" ||
+                                  errorMsg.includes("Network error") || 
+                                  errorMsg.includes("404") ||
+                                  errorMsg.includes("not found") ||
+                                  errorMsg.includes("RPC function");
+            if (!isSilentError) {
+                toast.error("Ошибка получения списка патчей: " + errorMsg);
+            } else if (errorMsg.includes("RPC function")) {
+                console.warn("RPC function not found - statistics feature unavailable");
+            }
+            setError("Не удалось получить список патчей из Supabase.");
+        });
 
         invoke<ChampionListItem[]>("get_all_champions").then(setAllChamps).catch(console.error);
     }, []);
 
     useEffect(() => {
+        (async () => {
+            try {
+                const versions: string[] = await fetch("https://ddragon.leagueoflegends.com/api/versions.json").then(r => r.json());
+                const ver = Array.isArray(versions) && versions.length ? versions[0] : ddragonVersion;
+                const [ru, en] = await Promise.all([
+                    fetch(`https://ddragon.leagueoflegends.com/cdn/${ver}/data/ru_RU/champion.json`).then(r => r.json()),
+                    fetch(`https://ddragon.leagueoflegends.com/cdn/${ver}/data/en_US/champion.json`).then(r => r.json())
+                ]);
+                const ruData: Record<string, any> = ru?.data || {};
+                const enData: Record<string, any> = en?.data || {};
+                const map: Record<string, ChampionMeta> = {};
+                Object.values(ruData).forEach((item: any) => {
+                    const key = item.key;
+                    const meta = {
+                        nameRu: item.name,
+                        nameEn: enData[item.id]?.name ?? item.id,
+                        icon: `https://ddragon.leagueoflegends.com/cdn/${ver}/img/champion/${item.id}.png`
+                    };
+                    map[item.id] = meta;
+                    map[key] = meta;
+                });
+                setChampDict(map);
+                setDdragonVersion(ver);
+            } catch (e) {
+                console.error("Failed to load DDragon champs", e);
+            }
+        })();
+    }, []);
+
+    useEffect(() => {
         if (!selectedPatch) return;
         setLoading(true);
-        invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch })
-            .then(setStats)
-            .catch(e => toast.error("Ошибка получения статистики: " + String(e)))
-            .finally(() => setLoading(false));
+        setError(null);
+
+        const idx = patches.findIndex(p => p === selectedPatch);
+        const prevPatch = idx >= 0 && idx + 1 < patches.length ? patches[idx + 1] : null;
+
+        const makeMap = (arr: SupabaseChampionStats[]) => {
+            const m: Record<string, SupabaseChampionStats> = {};
+            arr.forEach(item => {
+                const key = `${item.champion_id}|${item.role || ""}`;
+                m[key] = item;
+            });
+            return m;
+        };
+
+        console.log("Fetching stats for patch:", selectedPatch);
+        Promise.all([
+            invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch }),
+            prevPatch ? invoke<SupabaseChampionStats[]>("get_real_stats", { patch: prevPatch }).catch(() => []) : Promise.resolve([])
+        ])
+        .then(([curr, prev]) => {
+            console.log("Received stats:", curr);
+            setStats(curr);
+            setPrevStatsMap(makeMap(prev));
+        })
+        .catch(e => {
+            const errorMsg = String(e);
+            console.error("Error fetching stats:", errorMsg);
+            const isSilentError = errorMsg === "1" || errorMsg === "101" || 
+                                  errorMsg.trim() === "1" || errorMsg.trim() === "101" ||
+                                  errorMsg.includes("Network error") || errorMsg.includes("404") || 
+                                  errorMsg.includes("empty");
+            if (!isSilentError) {
+                toast.error("Ошибка получения статистики: " + errorMsg);
+            }
+            setError("Не удалось получить статистику для выбранного патча.");
+        })
+        .finally(() => setLoading(false));
     }, [selectedPatch]);
 
     const getChampIcon = (name: string) => {
+        if (champDict[name]?.icon) return champDict[name].icon;
         const found = allChamps.find(c => c.name === name || c.name_en === name || c.name.toLowerCase() === name.toLowerCase());
         return found?.icon_url;
     };
 
+    const getChampName = (id: string) => champDict[id]?.nameRu || id;
+    const getChampNameEn = (id: string) => champDict[id]?.nameEn || id;
+
+    const rankIcons: Record<string, string> = {
+        platinum: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-platinum.png",
+        emerald: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-emerald.png",
+        diamond: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-diamond.png",
+        master: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-master.png",
+        grandmaster: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-grandmaster.png",
+        challenger: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-challenger.png",
+    };
+
+    const roleIcons: Record<string, string> = {
+        top: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-top-blue.png",
+        jungle: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-jungle-blue.png",
+        mid: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-middle-blue.png",
+        bottom: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-bottom-blue.png",
+        support: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-utility-blue.png",
+        fill: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-fill-blue.png",
+        unknown: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/icon-position-fill-blue.png",
+    };
+
+    const normalizeRole = (role?: string | null) => {
+        if (!role) return "";
+        const r = role.trim().toLowerCase();
+        if (r === "middle" || r === "mid") return "mid";
+        if (r === "bottom" || r === "bot" || r === "adc") return "bottom";
+        if (r === "support" || r === "utility" || r === "supp") return "support";
+        if (r === "fill" || r === "any" || r === "unknown") return "fill";
+        return r;
+    };
+
+    const getRankIcon = (tier?: string | null) => {
+        if (!tier) return null;
+        const key = tier.toLowerCase();
+        return rankIcons[key] || null;
+    };
+
+    const getRoleIcon = (role?: string | null) => {
+        const key = normalizeRole(role);
+        if (!key) return null;
+        return roleIcons[key] || null;
+    };
+
+    const roles = Array.from(new Set(stats.map(s => normalizeRole(s.role) || "").filter(Boolean)));
+    const regions = Array.from(new Set(stats.map(s => (s.region || "").trim()).filter(Boolean)));
+    const tiers = Array.from(new Set(stats.map(s => (s.tier || "").trim()).filter(Boolean)));
+
+    const filteredStats = stats.filter(row => {
+        const matchRole = selectedRole === "all" || normalizeRole(row.role) === selectedRole;
+        const matchRegion = selectedRegion === "all" || (row.region || "") === selectedRegion;
+        const matchTier = selectedTier === "all" || (row.tier || "") === selectedTier;
+        return matchRole && matchRegion && matchTier;
+    });
+
+    const hasBanFiltered = filteredStats.some(s => s.ban_rate !== null && s.ban_rate !== undefined);
+
     return (
         <div className="space-y-6 animate-in fade-in duration-500">
             <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
-                    <DbIcon className="w-6 h-6 text-blue-500" />
-                    Live Статистика (Supabase)
-                </h2>
-                <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-500">Патч:</span>
-                    <select 
-                        className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
-                        value={selectedPatch}
-                        onChange={(e) => setSelectedPatch(e.target.value)}
-                    >
-                        {patches.map(p => <option key={p} value={p}>{p}</option>)}
-                    </select>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+                      <DbIcon className="w-6 h-6 text-blue-500" />
+                      Live Статистика
+                  </h2>
+                  {selectedPatch && (
+                    <span className="text-xs text-slate-500">
+                      Патч: {selectedPatch}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                        <span className="text-sm text-slate-500">Патч</span>
+                        {patches.length > 0 ? (
+                            <select 
+                                className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
+                                value={selectedPatch}
+                                onChange={(e) => setSelectedPatch(e.target.value)}
+                            >
+                                {patches.map(p => <option key={p} value={p}>{p}</option>)}
+                            </select>
+                        ) : (
+                            <span className="text-sm text-slate-400">Загрузка...</span>
+                        )}
+                    </div>
+                    <IconSelect
+                        label="Роль"
+                        value={selectedRole}
+                        onChange={setSelectedRole}
+                        options={[
+                            { value: "all", label: "Все" },
+                            ...roles.map(r => ({ value: r, label: r || "—", icon: getRoleIcon(r) || undefined }))
+                        ]}
+                    />
+                    <div className="flex items-center gap-2">
+                        <span className="text-sm text-slate-500">Сервер</span>
+                        <select
+                            className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500 uppercase"
+                            value={selectedRegion}
+                            onChange={(e) => setSelectedRegion(e.target.value)}
+                        >
+                            <option value="all">Все</option>
+                            {regions.map(r => <option key={r} value={r}>{r || "—"}</option>)}
+                        </select>
+                    </div>
+                    <IconSelect
+                        label="Ранг"
+                        value={selectedTier}
+                        onChange={setSelectedTier}
+                        options={[
+                            { value: "all", label: "Все" },
+                            ...tiers.map(t => ({ value: t, label: t || "—", icon: getRankIcon(t) || undefined }))
+                        ]}
+                    />
                 </div>
             </div>
 
@@ -1540,7 +1773,9 @@ function RealStatsView() {
                     <RefreshCw className="animate-spin w-8 h-8 text-blue-500" />
                     Загрузка данных из облака...
                 </div>
-            ) : stats.length === 0 ? (
+            ) : error ? (
+                 <EmptyState message={error} />
+            ) : filteredStats.length === 0 ? (
                  <EmptyState message="Нет данных статистики для выбранного патча." />
             ) : (
                 <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
@@ -1548,32 +1783,51 @@ function RealStatsView() {
                         <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
                             <tr>
                                 <th className="px-4 py-3">Ранг</th>
+                                <th className="px-4 py-3">Регион</th>
                                 <th className="px-4 py-3">Чемпион</th>
                                 <th className="px-4 py-3">Роль</th>
                                 <th className="px-4 py-3 text-right">Win Rate</th>
                                 <th className="px-4 py-3 text-right">Pick Rate</th>
-                                <th className="px-4 py-3 text-right">Ban Rate</th>
+                                {hasBanFiltered && <th className="px-4 py-3 text-right">Ban Rate</th>}
                                 <th className="px-4 py-3 text-right">Матчей</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {stats.map((row, idx) => (
+                            {filteredStats.map((row, idx) => (
                                 <tr key={idx} className="hover:bg-blue-50/50 transition-colors">
-                                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">{row.tier}</td>
-                                    <td className="px-4 py-3 font-medium text-slate-900 flex items-center gap-3">
-                                        <ChampionIcon url={getChampIcon(row.champion_id)} name={row.champion_id} size="sm" />
-                                        {row.champion_id}
+                                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">
+                                        {getRankIcon(row.tier) ? (
+                                            <img src={getRankIcon(row.tier)!} alt={row.tier} className="w-7 h-7" />
+                                        ) : (
+                                            row.tier
+                                        )}
                                     </td>
-                                    <td className="px-4 py-3 text-slate-500 text-xs uppercase font-bold tracking-wider">{row.role}</td>
+                                    <td className="px-4 py-3 text-slate-500 text-xs uppercase font-semibold">{row.region || "—"}</td>
+                                    <td className="px-4 py-3 font-medium text-slate-900 flex items-center gap-3">
+                                        <ChampionIcon url={getChampIcon(row.champion_id)} name={getChampName(row.champion_id)} size="sm" />
+                                        <div className="flex flex-col leading-tight">
+                                            <span>{getChampName(row.champion_id)}</span>
+                                            <span className="text-[11px] text-slate-400">{getChampNameEn(row.champion_id)}</span>
+                                        </div>
+                                    </td>
+                                    <td className="px-4 py-3 text-slate-500 text-xs uppercase font-bold tracking-wider">
+                                        {getRoleIcon(row.role) ? (
+                                            <img src={getRoleIcon(row.role)!} alt={row.role || "role"} className="w-6 h-6" />
+                                        ) : (
+                                            normalizeRole(row.role) || row.role
+                                        )}
+                                    </td>
                                     <td className={cn("px-4 py-3 text-right font-mono font-bold", (row.win_rate || 0) >= 50 ? "text-green-600" : "text-red-600")}>
                                         {row.win_rate ? row.win_rate.toFixed(2) : "-"}%
                                     </td>
                                     <td className="px-4 py-3 text-right text-slate-600 font-mono">
                                         {row.pick_rate ? row.pick_rate.toFixed(2) : "-"}%
                                     </td>
-                                    <td className="px-4 py-3 text-right text-slate-400 font-mono">
-                                        {row.ban_rate ? row.ban_rate.toFixed(2) : "-"}%
-                                    </td>
+                                    {hasBanFiltered && (
+                                      <td className="px-4 py-3 text-right text-slate-400 font-mono">
+                                          {row.ban_rate !== null && row.ban_rate !== undefined ? row.ban_rate.toFixed(2) : "-" }%
+                                      </td>
+                                    )}
                                     <td className="px-4 py-3 text-right text-slate-400 text-xs">
                                         {row.total_matches || 0}
                                     </td>

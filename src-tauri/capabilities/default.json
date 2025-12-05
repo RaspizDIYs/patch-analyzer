@@ -6,7 +6,11 @@
   "permissions": [
     "core:default",
     "core:event:allow-listen",
-    "core:event:allow-emit"
+    "core:event:allow-emit",
+    "updater:allow-check",
+    "updater:default",
+    "dialog:allow-ask",
+    "process:allow-restart"
   ]
 }
 

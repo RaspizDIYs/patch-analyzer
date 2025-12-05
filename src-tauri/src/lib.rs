@@ -431,7 +431,7 @@ pub fn run() {
     let supabase = SupabaseClient::new();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
