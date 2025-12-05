@@ -1,12 +1,20 @@
 {
   "productName": "LoL Meta Analyzer",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "identifier": "com.lolmeta.analyzer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhERjE3RjI1NjNCNDQ3M0QKUldROVI3UmpKWC94amJRMEplb1crSVAyM0FPSmVXSW1xa20xTWJ6OTlDOUhsTHI5ZjJ0YjRtaXcK",
+      "endpoints": [
+        "https://github.com/RaspizDIYs/patch-analyzer/releases/latest/download/latest.json"
+      ]
+    }
   },
   "app": {
     "windows": [
@@ -34,4 +42,3 @@
     "shortDescription": "League of Legends Patch Analyzer"
   }
 }
-

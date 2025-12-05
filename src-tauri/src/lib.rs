@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use crate::db::Database;
 use crate::scraper::Scraper;
 use crate::analyzer::Analyzer;
+use crate::supabase::SupabaseClient;
 use crate::models::{PatchData, MetaAnalysisDiff, PatchNoteEntry, PatchCategory};
 use std::collections::{HashSet, HashMap};
 use serde::Serialize;
@@ -15,10 +16,12 @@ pub mod models;
 pub mod db;
 pub mod scraper;
 pub mod analyzer;
+pub mod supabase;
 
 struct AppState {
     db: Database,
     scraper: Scraper,
+    supabase: SupabaseClient,
     tier_cache: Option<(String, Vec<TierEntry>)>,
 }
 
@@ -404,14 +407,35 @@ async fn clear_database(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), 
     Ok(())
 }
 
+#[tauri::command]
+async fn get_real_stats(
+    patch: String,
+    state: tauri::State<'_, Mutex<AppState>>
+) -> Result<Vec<supabase::SupabaseChampionStatsRaw>, String> {
+    let state = state.lock().await;
+    state.supabase.get_champion_stats(&patch).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_available_stats_patches(
+    state: tauri::State<'_, Mutex<AppState>>
+) -> Result<Vec<String>, String> {
+    let state = state.lock().await;
+    state.supabase.get_available_patches_stats().await.map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db = tokio::runtime::Runtime::new().unwrap().block_on(Database::new()).expect("Failed to init DB");
     let scraper = Scraper::new().expect("Failed to init Scraper");
+    let supabase = SupabaseClient::new();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            app.manage(Mutex::new(AppState { db, scraper, tier_cache: None }));
+            app.manage(Mutex::new(AppState { db, scraper, supabase, tier_cache: None }));
             
             let menu = Menu::with_items(app, &[
                 &MenuItem::with_id(app, "Show", "Show", true, None::<&str>)?,
@@ -462,7 +486,9 @@ pub fn run() {
             get_changed_itemsrunes_titles,
             get_tier_list,
             sync_patch_history,
-            clear_database
+            clear_database,
+            get_real_stats,
+            get_available_stats_patches
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

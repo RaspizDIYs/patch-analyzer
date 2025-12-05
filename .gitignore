@@ -6,4 +6,4 @@ src-tauri/target
 *.db-shm
 *.db-wal
 .vscode
-
+src-tauri/secrets.env

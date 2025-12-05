@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
-import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft } from "lucide-react";
+import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, Database as DbIcon } from "lucide-react";
 import { cn } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
@@ -108,6 +108,18 @@ interface RuneListItem { name: string; nameEn: string; icon_url: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
 interface LogEntry { level: string; message: string; timestamp: string; }
 interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; }
+interface SupabaseChampionStats {
+    id: number;
+    champion_id: string;
+    patch_version: string;
+    region: string;
+    tier: string;
+    role: string | null;
+    win_rate: number | null;
+    pick_rate: number | null;
+    ban_rate: number | null;
+    total_matches: number | null;
+}
 
 function compareVersions(v1: string, v2: string) {
     const parse = (v: string) => v.split('.').map(n => parseInt(n, 10)).filter(n => !isNaN(n));
@@ -121,7 +133,32 @@ function compareVersions(v1: string, v2: string) {
     return 0;
 }
 
+import { check } from '@tauri-apps/plugin-updater';
+import { ask } from '@tauri-apps/plugin-dialog';
+import { relaunch } from '@tauri-apps/plugin-process';
+
 function App() {
+    useEffect(() => {
+        const initUpdater = async () => {
+            try {
+                const update = await check();
+                if (update?.available) {
+                    const yes = await ask(`Доступна новая версия ${update.version}! Хотите обновиться сейчас?`, {
+                        title: 'Обновление доступно',
+                        kind: 'info'
+                    });
+                    if (yes) {
+                        await update.downloadAndInstall();
+                        await relaunch();
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to check for updates:', e);
+            }
+        }
+        initUpdater();
+    }, []);
+
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [version, setVersion] = useState("25.23"); 
@@ -181,6 +218,7 @@ function App() {
     { path: "/", label: "Патч Ноут", icon: BookOpen },
     { path: "/meta", label: "Изменения Меты", icon: LineChart },
     { path: "/predictions", label: "Прогнозы", icon: TrendingUp },
+    { path: "/real-stats", label: "Live Статистика", icon: DbIcon },
     { path: "/tier", label: "Тир-лист", icon: LineChart },
     { path: "/history", label: "История изменений", icon: History },
     { path: "/logs", label: "Логи", icon: ScrollText },
@@ -256,6 +294,7 @@ function App() {
             <Route path="/" element={<PatchReleaseView data={patchData} />} />
             <Route path="/meta" element={<MetaChangesView diffs={diffs} />} />
             <Route path="/predictions" element={<PredictionsView diffs={diffs} />} />
+            <Route path="/real-stats" element={<RealStatsView />} />
             <Route path="/tier" element={<TierListView />} />
             <Route path="/history" element={<ChampionHistoryView />} />
             <Route path="/logs" element={<LogsView logs={logs} />} />
@@ -1445,6 +1484,107 @@ function PredictionsView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
       </div>
     </div>
   );
+}
+
+function RealStatsView() {
+    const [stats, setStats] = useState<SupabaseChampionStats[]>([]);
+    const [patches, setPatches] = useState<string[]>([]);
+    const [selectedPatch, setSelectedPatch] = useState<string>("");
+    const [loading, setLoading] = useState(false);
+    const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
+
+    useEffect(() => {
+        invoke<string[]>("get_available_stats_patches").then(list => {
+            setPatches(list);
+            if (list.length > 0) setSelectedPatch(list[0]);
+        }).catch(e => toast.error("Ошибка получения списка патчей: " + String(e)));
+
+        invoke<ChampionListItem[]>("get_all_champions").then(setAllChamps).catch(console.error);
+    }, []);
+
+    useEffect(() => {
+        if (!selectedPatch) return;
+        setLoading(true);
+        invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch })
+            .then(setStats)
+            .catch(e => toast.error("Ошибка получения статистики: " + String(e)))
+            .finally(() => setLoading(false));
+    }, [selectedPatch]);
+
+    const getChampIcon = (name: string) => {
+        const found = allChamps.find(c => c.name === name || c.name_en === name || c.name.toLowerCase() === name.toLowerCase());
+        return found?.icon_url;
+    };
+
+    return (
+        <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+                    <DbIcon className="w-6 h-6 text-blue-500" />
+                    Live Статистика (Supabase)
+                </h2>
+                <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-500">Патч:</span>
+                    <select 
+                        className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
+                        value={selectedPatch}
+                        onChange={(e) => setSelectedPatch(e.target.value)}
+                    >
+                        {patches.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                </div>
+            </div>
+
+            {loading ? (
+                 <div className="text-center py-20 text-slate-400 flex flex-col items-center gap-4">
+                    <RefreshCw className="animate-spin w-8 h-8 text-blue-500" />
+                    Загрузка данных из облака...
+                </div>
+            ) : stats.length === 0 ? (
+                 <EmptyState message="Нет данных статистики для выбранного патча." />
+            ) : (
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                    <table className="w-full text-sm text-left">
+                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+                            <tr>
+                                <th className="px-4 py-3">Ранг</th>
+                                <th className="px-4 py-3">Чемпион</th>
+                                <th className="px-4 py-3">Роль</th>
+                                <th className="px-4 py-3 text-right">Win Rate</th>
+                                <th className="px-4 py-3 text-right">Pick Rate</th>
+                                <th className="px-4 py-3 text-right">Ban Rate</th>
+                                <th className="px-4 py-3 text-right">Матчей</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {stats.map((row, idx) => (
+                                <tr key={idx} className="hover:bg-blue-50/50 transition-colors">
+                                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">{row.tier}</td>
+                                    <td className="px-4 py-3 font-medium text-slate-900 flex items-center gap-3">
+                                        <ChampionIcon url={getChampIcon(row.champion_id)} name={row.champion_id} size="sm" />
+                                        {row.champion_id}
+                                    </td>
+                                    <td className="px-4 py-3 text-slate-500 text-xs uppercase font-bold tracking-wider">{row.role}</td>
+                                    <td className={cn("px-4 py-3 text-right font-mono font-bold", (row.win_rate || 0) >= 50 ? "text-green-600" : "text-red-600")}>
+                                        {row.win_rate ? row.win_rate.toFixed(2) : "-"}%
+                                    </td>
+                                    <td className="px-4 py-3 text-right text-slate-600 font-mono">
+                                        {row.pick_rate ? row.pick_rate.toFixed(2) : "-"}%
+                                    </td>
+                                    <td className="px-4 py-3 text-right text-slate-400 font-mono">
+                                        {row.ban_rate ? row.ban_rate.toFixed(2) : "-"}%
+                                    </td>
+                                    <td className="px-4 py-3 text-right text-slate-400 text-xs">
+                                        {row.total_matches || 0}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
 }
 
 function EmptyState({ message = "Выберите патч и нажмите Обновить" }: { message?: string }) {
