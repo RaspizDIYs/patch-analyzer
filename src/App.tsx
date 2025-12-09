@@ -5,7 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, ArrowLeft, Database as DbIcon, Settings, Sun, Moon, ExternalLink } from "lucide-react";
-import { cn, mapPatchVersion } from "./lib/utils";
+import { cn } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
 function cleanUrl(url?: string | null) {
@@ -232,7 +232,7 @@ function App() {
     useEffect(() => {
         const initUpdater = async () => {
             try {
-                const update = await check({ channel: updateChannel });
+                const update = await check();
                 if (update?.available) {
                     const yes = await ask(`Доступна новая версия ${update.version}! Хотите обновиться сейчас?`, {
                         title: 'Обновление доступно',
@@ -1769,7 +1769,6 @@ function RealStatsView() {
     const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
     const [champDict, setChampDict] = useState<Record<string, ChampionMeta>>({});
     const [ddragonVersion, setDdragonVersion] = useState<string>("15.24.1");
-    const [prevStatsMap, setPrevStatsMap] = useState<Record<string, SupabaseChampionStats>>({});
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
@@ -1838,27 +1837,11 @@ function RealStatsView() {
         setLoading(true);
         setError(null);
 
-        const idx = patches.findIndex(p => p === selectedPatch);
-        const prevPatch = idx >= 0 && idx + 1 < patches.length ? patches[idx + 1] : null;
-
-        const makeMap = (arr: SupabaseChampionStats[]) => {
-            const m: Record<string, SupabaseChampionStats> = {};
-            arr.forEach(item => {
-                const key = `${item.champion_id}|${item.role || ""}`;
-                m[key] = item;
-            });
-            return m;
-        };
-
         console.log("Fetching stats for patch:", selectedPatch);
-        Promise.all([
-            invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch }),
-            prevPatch ? invoke<SupabaseChampionStats[]>("get_real_stats", { patch: prevPatch }).catch(() => []) : Promise.resolve([])
-        ])
-        .then(([curr, prev]) => {
+        invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch })
+        .then((curr) => {
             console.log("Received stats:", curr);
             setStats(curr);
-            setPrevStatsMap(makeMap(prev));
         })
         .catch(e => {
             const errorMsg = String(e);

@@ -1,0 +1,12 @@
+{
+  "version": "1.0.1-beta",
+  "notes": "Beta канал обновлений\n\nНовые возможности:\n- Поддержка каналов обновлений (stable/beta)\n- Темная тема\n- Адаптивный дизайн\n- Улучшения настроек",
+  "pub_date": "2025-12-09T13:38:52Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "https://github.com/RaspizDIYs/patch-analyzer/releases/download/v1.0.1-beta/LoL%20Meta%20Analyzer_0.1.0_x64-setup.exe"
+    }
+  }
+}
+
