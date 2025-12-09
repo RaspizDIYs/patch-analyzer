@@ -288,17 +288,19 @@ async fn get_changed_itemsrunes_titles(
 
 #[tauri::command]
 async fn get_tier_list(
+    window: Option<u32>,
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<Vec<TierEntry>, String> {
     let mut state = state.lock().await;
+    let window = window.unwrap_or(20).max(1).min(50);
     let patches = state
         .db
-        .get_recent_patches(20)
+        .get_recent_patches(window as i64)
         .await
         .map_err(|e| e.to_string())?;
 
     // Строим сигнатуру состояния данных (версии + fetched_at) для кеша
-    let mut signature = String::new();
+    let mut signature = format!("window:{};", window);
     for p in &patches {
         signature.push_str(&p.version);
         signature.push('|');

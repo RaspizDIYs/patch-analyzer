@@ -1,15 +1,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
- 
+
 @layer base {
   :root {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    color-scheme: light;
+    --background: 0 0% 98%;
+    --foreground: 222.2 47.4% 11.2%;
+    --surface: 0 0% 100%;
+    --muted: 215 16% 90%;
+    --border: 215 25% 86%;
     --primary: 217.2 91.2% 59.8%;
   }
- 
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --background: 222.2 84% 5%;
+    --foreground: 210 40% 98%;
+    --surface: 222.2 30% 12%;
+    --muted: 222.2 25% 15%;
+    --border: 222.2 18% 20%;
+    --primary: 217.2 91.2% 59.8%;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  .panel {
+    background-color: hsl(var(--surface));
+    border: 1px solid hsl(var(--border));
   }
 }

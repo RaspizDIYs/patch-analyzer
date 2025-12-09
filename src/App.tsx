@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
+import { useState, useEffect, useRef, useId, Component, ErrorInfo, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
-import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, Database as DbIcon } from "lucide-react";
+import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, ArrowLeft, Database as DbIcon, Settings, Sun, Moon, ExternalLink } from "lucide-react";
 import { cn, mapPatchVersion } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
@@ -21,12 +22,12 @@ function highlightSpecialTags(text: string): string {
   // НОВОЕ / Новое / NEW (без word boundary, на всякий случай)
   text = text.replace(
     /(НОВОЕ|Новое|NEW)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold text-[11px] align-middle">$1</span>',
+    '<span class="inline px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-100 font-semibold text-[11px] align-middle">$1</span>',
   );
   // УДАЛЕНО / Удалено / REMOVED
   text = text.replace(
     /(УДАЛЕНО|Удалено|REMOVED)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold text-[11px] align-middle">$1</span>',
+    '<span class="inline px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-100 font-semibold text-[11px] align-middle">$1</span>',
   );
   return text;
 }
@@ -122,6 +123,9 @@ interface SupabaseChampionStats {
     total_matches: number | null;
 }
 
+type ThemeMode = "light" | "dark";
+type UpdateChannel = "stable" | "beta";
+
 function compareVersions(v1: string, v2: string) {
     const parse = (v: string) => v.split('.').map(n => parseInt(n, 10)).filter(n => !isNaN(n));
     const p1 = parse(v1);
@@ -138,27 +142,53 @@ import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 
-function IconSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string }[] }) {
+function IconSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string; disabled?: boolean }[] }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const closeOnOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const closeOnOtherOpen = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (detail !== id) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    window.addEventListener("iconselect-open", closeOnOtherOpen as EventListener);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      window.removeEventListener("iconselect-open", closeOnOtherOpen as EventListener);
+    };
+  }, [id]);
+
+  const toggle = () => {
+    setOpen(prev => {
+      const next = !prev;
+      if (next) window.dispatchEvent(new CustomEvent("iconselect-open", { detail: id }));
+      return next;
+    });
+  };
   const current = options.find(o => o.value === value);
   return (
-    <div className="relative inline-block">
+    <div className="relative inline-block" ref={ref}>
       <button
-        className="flex items-center gap-2 bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
-        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500 dark:focus:border-blue-400 text-slate-700 dark:text-slate-100"
+        onClick={toggle}
         type="button"
       >
-        <span className="text-slate-500">{label}</span>
+        <span className="text-slate-500 dark:text-slate-300">{label}</span>
         {current?.icon && <img src={current.icon} alt={current.label} className="w-4 h-4" />}
         <span>{current?.label || "Все"}</span>
       </button>
       {open && (
-        <div className="absolute z-20 mt-1 w-full min-w-[140px] bg-white border border-slate-200 rounded-md shadow-sm">
+        <div className="absolute z-20 mt-1 w-full min-w-[140px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md shadow-sm">
           {options.map(opt => (
             <div
               key={opt.value}
-              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer"
-              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={cn("flex items-center gap-2 px-3 py-2 text-sm", opt.disabled ? "text-slate-300 dark:text-slate-600 cursor-not-allowed" : "hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer text-slate-700 dark:text-slate-100")}
+              onClick={() => { if (opt.disabled) return; onChange(opt.value); setOpen(false); }}
             >
               {opt.icon && <img src={opt.icon} alt={opt.label} className="w-4 h-4" />}
               <span>{opt.label}</span>
@@ -171,10 +201,38 @@ function IconSelect({ label, value, onChange, options }: { label: string; value:
 }
 
 function App() {
+    const [theme, setTheme] = useState<ThemeMode>(() => {
+        if (typeof window === "undefined") return "light";
+        const stored = localStorage.getItem("theme");
+        if (stored === "light" || stored === "dark") return stored;
+        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    });
+    const [updateChannel, setUpdateChannel] = useState<UpdateChannel>(() => {
+        if (typeof window === "undefined") return "stable";
+        const stored = localStorage.getItem("updateChannel");
+        return stored === "beta" ? "beta" : "stable";
+    });
+    const [appVersion, setAppVersion] = useState<string>("");
+
+    useEffect(() => {
+        if (typeof document === "undefined") return;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        localStorage.setItem("theme", theme);
+    }, [theme]);
+
+    useEffect(() => {
+        localStorage.setItem("updateChannel", updateChannel);
+    }, [updateChannel]);
+
+    useEffect(() => {
+        getVersion().then(setAppVersion).catch(() => {});
+    }, []);
+
     useEffect(() => {
         const initUpdater = async () => {
             try {
-                const update = await check();
+                const update = await check({ channel: updateChannel });
                 if (update?.available) {
                     const yes = await ask(`Доступна новая версия ${update.version}! Хотите обновиться сейчас?`, {
                         title: 'Обновление доступно',
@@ -193,7 +251,7 @@ function App() {
             }
         }
         initUpdater();
-    }, []);
+    }, [updateChannel]);
 
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -262,44 +320,44 @@ function App() {
     { path: "/real-stats", label: "Live Статистика", icon: DbIcon },
     { path: "/tier", label: "Тир-лист", icon: LineChart },
     { path: "/history", label: "История изменений", icon: History },
-    { path: "/logs", label: "Логи", icon: ScrollText },
   ];
 
   return (
     <ErrorBoundary>
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans selection:bg-blue-100">
-      <Toaster position="top-right" theme="light" />
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-md p-4 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-6">
+    <div className={cn("min-h-screen flex flex-col font-sans selection:bg-blue-100 dark:selection:bg-blue-900/40", "bg-[hsl(var(--background))] text-[hsl(var(--foreground))]")}>
+      <Toaster position="top-right" theme={theme === "dark" ? "dark" : "light"} />
+      <header className="border-b border-slate-200 dark:border-slate-800 bg-[color-mix(in_srgb,hsl(var(--surface))_85%,transparent)] backdrop-blur-md p-4 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-6xl mx-auto flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-4">
              <div className="flex items-center gap-3 group cursor-default">
                 <div className="relative">
                     <div className="absolute inset-0 bg-blue-500 blur-lg opacity-20 group-hover:opacity-40 transition-opacity rounded-full"></div>
                     <img src="/A.svg" alt="LoL Analyzer" className="w-10 h-10 relative z-10 drop-shadow-sm" />
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold text-slate-900 leading-none tracking-tight group-hover:text-blue-600 transition-colors">LoL Analyzer</h1>
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Patch {version}</span>
+                  <h1 className="text-xl font-bold leading-none tracking-tight group-hover:text-blue-600 transition-colors text-slate-900 dark:text-slate-50">LoL Analyzer</h1>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider font-bold">Patch {version}</span>
                 </div>
              </div>
-            <nav className="flex gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 ml-4">
-              {navItems.map(({ path, label, icon: Icon }) => (
-                <Link key={path} to={path} className={cn("flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all", location.pathname === path ? "bg-white text-blue-600 shadow-sm border border-slate-200" : "text-slate-500 hover:text-slate-900 hover:bg-white/50")}>
-                  <Icon className="w-4 h-4" /> {label}
-                </Link>
-              ))}
+            <nav className="flex-1 min-w-[260px] w-full">
+              <div className="flex flex-wrap gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+                {navItems.map(({ path, label, icon: Icon }) => (
+                  <Link key={path} to={path} className={cn("flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all", location.pathname === path ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-300 shadow-sm border border-slate-200 dark:border-slate-700" : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-700/60")}>
+                    <Icon className="w-4 h-4" /> {label}
+                  </Link>
+                ))}
+              </div>
             </nav>
           </div>
-          <div className="flex gap-3 items-center ml-auto pl-6">
+          <div className="flex flex-wrap gap-3 justify-end">
              <button 
                 onClick={handleSyncAll} 
                 disabled={syncing}
-                className={cn("flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-md transition-all border shadow-sm active:scale-95 h-8", syncing ? "bg-slate-100 text-slate-400 border-transparent" : "bg-white hover:bg-blue-50 text-slate-700 border-slate-200 hover:border-blue-200 hover:text-blue-600")}
+                className={cn("flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-md transition-all border shadow-sm active:scale-95 h-9", syncing ? "bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent" : "bg-white dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-100 border-slate-200 dark:border-slate-700 hover:border-blue-200 hover:text-blue-600")}
              >
                 <DownloadCloud className={cn("w-4 h-4", syncing && "animate-bounce")} /> 
                 {syncing ? "Загрузка..." : "Скачать патчи"}
              </button>
-            <div className="h-6 w-px bg-slate-200"></div>
             
             <CustomPatchSelect 
                 value={version} 
@@ -307,6 +365,13 @@ function App() {
                 onChange={setVersion} 
                 loading={loading}
             />
+            <Link 
+              to="/settings"
+              className="flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-md transition-all border shadow-sm active:scale-95 h-9 bg-white dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-100 border-slate-200 dark:border-slate-700 hover:border-blue-200 hover:text-blue-600"
+            >
+              <Settings className="w-4 h-4" />
+              Настройки
+            </Link>
             <button 
                onClick={async () => {
                   if (confirm("Вы уверены, что хотите очистить локальную базу данных? Это исправит ошибки с данными.")) {
@@ -314,15 +379,11 @@ function App() {
                           await invoke("clear_database"); 
                           window.location.reload();
                       } catch (e) {
-                          // If command not found (yet), manual clear via backend needed?
-                          // Actually we can just ask backend to delete the file via a command if we add it
-                          // For now, just handleSyncAll is the main way to refresh.
-                          // We will assume the user manually deleted or I did it via tool.
                           toast.info("Функция очистки в разработке. Пожалуйста, перезапустите приложение.");
                       }
                   }
                }}
-               className="ml-2 text-xs text-red-400 hover:text-red-600 underline"
+               className="text-xs font-semibold px-3 py-1.5 rounded-md border border-red-200 dark:border-red-700 text-red-500 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors h-9"
             >
                Сброс
             </button>
@@ -339,6 +400,7 @@ function App() {
             <Route path="/tier" element={<TierListView />} />
             <Route path="/history" element={<ChampionHistoryView />} />
             <Route path="/logs" element={<LogsView logs={logs} />} />
+            <Route path="/settings" element={<SettingsView theme={theme} onThemeChange={setTheme} channel={updateChannel} onChannelChange={setUpdateChannel} appVersion={appVersion} />} />
           </Routes>
         </ErrorBoundary>
       </main>
@@ -361,18 +423,18 @@ function CustomPatchSelect({ value, options, onChange, loading }: { value: strin
         <div className="relative" ref={ref}>
             <button 
                 onClick={() => setIsOpen(!isOpen)}
-                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-sm w-32 justify-between"
+                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-sm w-32 justify-between border border-slate-800 dark:border-slate-200"
             >
                 <span className={cn(loading && "opacity-50")}>{value}</span>
                 <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
             </button>
             {isOpen && (
-                <div className="absolute top-full right-0 mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in fade-in zoom-in-95 duration-200">
+                <div className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in fade-in zoom-in-95 duration-200">
                     {options.map(opt => (
                         <div 
                             key={opt} 
                             onClick={() => { onChange(opt); setIsOpen(false); }}
-                            className={cn("px-3 py-2 rounded-lg text-sm font-medium cursor-pointer flex items-center justify-between transition-colors", opt === value ? "bg-blue-50 text-blue-600" : "hover:bg-slate-50 text-slate-700")}
+                            className={cn("px-3 py-2 rounded-lg text-sm font-medium cursor-pointer flex items-center justify-between transition-colors", opt === value ? "bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-200" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200")}
                         >
                             Patch {opt}
                             {opt === value && <Check className="w-3 h-3" />}
@@ -384,15 +446,162 @@ function CustomPatchSelect({ value, options, onChange, loading }: { value: strin
     );
 }
 
+function SettingsView({ theme, onThemeChange, channel, onChannelChange, appVersion }: { theme: ThemeMode; onThemeChange: (t: ThemeMode) => void; channel: UpdateChannel; onChannelChange: (c: UpdateChannel) => void; appVersion: string }) {
+  const themeOptions: { key: ThemeMode; label: string; desc: string; icon: typeof Sun }[] = [
+    { key: "light", label: "Светлая", desc: "Стандартный светлый интерфейс", icon: Sun },
+    { key: "dark", label: "Тёмная", desc: "Для ночной работы и OLED", icon: Moon },
+  ];
+  const channelOptions: { key: UpdateChannel; label: string; desc: string }[] = [
+    { key: "stable", label: "Стабильная (master)", desc: "Релизы из master" },
+    { key: "beta", label: "Бета (beta)", desc: "Свежие сборки, возможны баги" },
+  ];
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="panel rounded-xl p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">Тема</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">Переключи светлую/тёмную оболочку</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {themeOptions.map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => onThemeChange(opt.key)}
+              className={cn(
+                "flex items-center gap-3 rounded-lg border px-3 py-3 text-left transition-all shadow-sm",
+                theme === opt.key
+                  ? "border-blue-300 dark:border-blue-600 bg-blue-50/70 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200"
+                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 hover:border-blue-200 dark:hover:border-blue-500"
+              )}
+            >
+              <opt.icon className="w-5 h-5" />
+              <div>
+                <div className="font-semibold">{opt.label}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">{opt.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel rounded-xl p-5 shadow-sm space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Канал обновлений</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">master — стабильная, beta — бета</p>
+          </div>
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            Текущая версия: <span className="font-semibold text-slate-800 dark:text-slate-100">{appVersion || "—"}</span> ({channel})
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {channelOptions.map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => onChannelChange(opt.key)}
+              className={cn(
+                "px-3 py-2 rounded-lg border text-sm font-semibold transition-all shadow-sm",
+                channel === opt.key
+                  ? "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200 border-blue-200 dark:border-blue-700"
+                  : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:border-blue-200 dark:hover:border-blue-500"
+              )}
+            >
+              <div className="font-semibold">{opt.label}</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Логи</h3>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Перейти к live-логам приложения</p>
+        </div>
+        <Link
+          to="/logs"
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors"
+        >
+          <ScrollText className="w-4 h-4" />
+          Открыть логи
+        </Link>
+      </div>
+
+      <div className="panel rounded-xl p-5 shadow-sm">
+        <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-3">Разработчики</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="flex items-center gap-3">
+            <img
+              src="https://github.com/Jab04kin.png"
+              alt="Jab04kin avatar"
+              className="w-14 h-14 rounded-full border border-slate-200 dark:border-slate-700 object-cover"
+            />
+            <a
+              href="https://github.com/Jab04kin"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 text-base font-semibold text-blue-600 dark:text-blue-300 hover:underline"
+            >
+              Jab04kin
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          </div>
+          <div className="flex items-center gap-3">
+            <img
+              src="https://github.com/Alexxxxxander.png"
+              alt="Alexxxxxander avatar"
+              className="w-14 h-14 rounded-full border border-slate-200 dark:border-slate-700 object-cover"
+            />
+            <a
+              href="https://github.com/Alexxxxxander"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 text-base font-semibold text-blue-600 dark:text-blue-300 hover:underline"
+            >
+              Alexxxxxander
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel rounded-xl p-5 shadow-sm flex items-center gap-4">
+        <img
+          src="https://github.com/RaspizDIYs.png"
+          alt="RaspizDIYs avatar"
+          className="w-14 h-14 rounded-full border border-slate-200 dark:border-slate-700 object-cover bg-white dark:bg-slate-800"
+        />
+        <div className="space-y-1">
+          <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Организация</div>
+          <div className="text-base font-semibold text-slate-900 dark:text-slate-100">RaspizDIYs</div>
+          <a
+            href="https://github.com/RaspizDIYs"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-blue-600 dark:text-blue-300 hover:underline"
+          >
+            другие проекты
+            <ExternalLink className="w-4 h-4" />
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ... LogsView, ChampionHistoryView, PatchReleaseView, MetaChangesView, PredictionsView, etc. same as before ...
 // Need to include them to be valid. I will use shortened versions if unchanged logic, but full if needed.
 // Actually, I'll just output the full file content for safety.
 
 function LogsView({ logs }: { logs: LogEntry[] }) {
+  const navigate = useNavigate();
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
        <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-slate-900">Системные Логи</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Системные Логи</h2>
           <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded">Live Updates</span>
        </div>
        <div className="bg-slate-900 rounded-xl p-4 h-[600px] overflow-y-auto font-mono text-xs custom-scrollbar">
@@ -412,6 +621,15 @@ function LogsView({ logs }: { logs: LogEntry[] }) {
             ))
           )}
        </div>
+       <div className="flex justify-end">
+         <button
+           onClick={() => navigate("/settings")}
+           className="inline-flex items-center gap-2 px-4 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-100 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors shadow-sm"
+         >
+           <ArrowLeft className="w-4 h-4" />
+           Назад
+         </button>
+       </div>
     </div>
   );
 }
@@ -420,6 +638,7 @@ function TierListView() {
   const [data, setData] = useState<TierEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
+  const [patchWindow, setPatchWindow] = useState<number>(20);
   const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
   const [allRunes, setAllRunes] = useState<RuneListItem[]>([]);
   const [allItems, setAllItems] = useState<ItemListItem[]>([]);
@@ -427,11 +646,11 @@ function TierListView() {
 
   useEffect(() => {
     setLoading(true);
-    invoke<TierEntry[]>("get_tier_list")
+    invoke<TierEntry[]>("get_tier_list", { window: patchWindow })
       .then(setData)
       .catch(e => toast.error(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [patchWindow]);
 
   // чемпы, руны, предметы — берём те же DDragon данные, что и в истории
   useEffect(() => {
@@ -539,8 +758,20 @@ function TierListView() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold text-slate-900">Тир-лист (20 патчей)</h2>
-        <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-xs font-semibold">
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Тир-лист</h2>
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <span>Патчей:</span>
+            <select
+              className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
+              value={patchWindow}
+              onChange={e => setPatchWindow(Number(e.target.value))}
+            >
+              {[1,3,5,10,20].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
           {[
             { key: "champion", label: "Чемпионы" },
             { key: "rune", label: "Руны" },
@@ -554,8 +785,8 @@ function TierListView() {
               className={cn(
                 "px-3 py-1 rounded-lg transition-colors",
                 entityType === tab.key
-                  ? "bg-white text-blue-600 shadow-sm"
-                  : "text-slate-500 hover:text-slate-900",
+                  ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-200 shadow-sm border border-slate-200 dark:border-slate-700"
+                  : "text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white",
               )}
             >
               {tab.label}
@@ -572,8 +803,8 @@ function TierListView() {
       )}
 
       {!loading && (
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 bg-slate-50 border-b border-slate-200 px-4 py-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden">
+          <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 px-4 py-2">
             <div className="col-span-6">Сущность</div>
             <div className="col-span-2 text-center text-emerald-700">↑ Buff</div>
             <div className="col-span-2 text-center text-red-700">↓ Nerf</div>
@@ -587,7 +818,7 @@ function TierListView() {
                 <button
                   key={entry.name + entry.category + idx}
                   onClick={() => handleOpenHistory(entry)}
-                  className="w-full flex items-center px-4 py-2 text-sm hover:bg-blue-50/60 transition-colors"
+                  className="w-full flex items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800 transition-colors"
                 >
                   <div className="flex items-center gap-3 col-span-6 flex-1">
                     <span className="w-6 text-[11px] text-slate-400 font-mono">#{idx + 1}</span>
@@ -598,11 +829,11 @@ function TierListView() {
                       />
                     )}
                     {!icon && (
-                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400 border border-slate-200">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 border border-slate-200 dark:border-slate-700">
                         {name.slice(0, 2)}
                       </div>
                     )}
-                    <span className="font-semibold text-slate-800">{name}</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-100">{name}</span>
                     <span className="ml-2 text-[11px] text-slate-400">
                       {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
                     </span>
@@ -946,8 +1177,8 @@ function ChampionHistoryView() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
        <div className="flex items-center justify-between gap-4">
-           <h2 className="text-2xl font-bold text-slate-900">История изменений</h2>
-           <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-xs font-semibold">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">История изменений</h2>
+           <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
              {[
                { key: "champion", label: "Чемпионы" },
                { key: "rune", label: "Руны" },
@@ -965,8 +1196,8 @@ function ChampionHistoryView() {
                  className={cn(
                    "px-3 py-1 rounded-lg transition-colors",
                    entityType === tab.key
-                     ? "bg-white text-blue-600 shadow-sm"
-                     : "text-slate-500 hover:text-slate-900"
+                    ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-200 shadow-sm border border-slate-200 dark:border-slate-700"
+                    : "text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
                  )}
                >
                  {tab.label}
@@ -1009,7 +1240,7 @@ function ChampionHistoryView() {
          )
        )}
        {!loading && history.length > 0 && (
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 relative overflow-hidden">
+          <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-4 opacity-10"><History className="w-24 h-24 text-slate-300" /></div>
               <div className="flex items-center gap-4 mb-6 relative z-10">
                    {entityType === "champion" && champion && (
@@ -1025,28 +1256,28 @@ function ChampionHistoryView() {
                      />
                    )}
                    <div>
-                       <h3 className="text-2xl font-bold text-slate-900">
+                       <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
                          {entityType === "champion" && champion && champion.name}
                          {entityType === "rune" && selectedRune && selectedRune.name}
                          {entityType === "item" && selectedItem && selectedItem.name}
                        </h3>
-                       <div className="text-xs text-slate-500 font-bold uppercase tracking-wider bg-white px-2 py-1 rounded-md inline-block mt-1 border border-slate-100">
+                       <div className="text-xs text-slate-500 font-bold uppercase tracking-wider bg-white dark:bg-slate-800 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
                          Общая сводка (20 патчей)
                        </div>
                    </div>
               </div>
-              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm relative z-10 space-y-4">
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm relative z-10 space-y-4">
                   {aggregatedGroups.map((group, i) => (
                       <div key={i}>
                           {group.title && (
-                              <div className="flex items-center gap-2 mb-2 border-b border-slate-100 pb-1">
+                              <div className="flex items-center gap-2 mb-2 border-b border-slate-100 dark:border-slate-800 pb-1">
                                   {(() => {
                                     const icon = group.icon || getFallbackIcon(group.title);
                                     return icon ? (
-                                      <img src={cleanUrl(icon)} className="w-6 h-6 rounded bg-slate-100" />
+                                      <img src={cleanUrl(icon)} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-800" />
                                     ) : null;
                                   })()}
-                                  <h4 className="font-bold text-slate-800">{group.title}</h4>
+                                  <h4 className="font-bold text-slate-800 dark:text-slate-100">{group.title}</h4>
                               </div>
                           )}
                           <ul className="space-y-2 pl-2">
@@ -1062,7 +1293,7 @@ function ChampionHistoryView() {
                                   );
                                   const html = highlightSpecialTags(
                                     change
-                                      .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900">$1</span>')
+                                      .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900 dark:text-slate-100">$1</span>')
                                       .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
                                   );
                                   return (
@@ -1086,7 +1317,7 @@ function ChampionHistoryView() {
        )}
        {loading && <div className="text-center py-20 text-slate-400 flex flex-col items-center gap-4"><RefreshCw className="animate-spin w-8 h-8 text-blue-500" />Загрузка истории...</div>}
        {!loading && history.length === 0 && (
-          <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-xl text-slate-500 bg-slate-50/50">
+          <div className="p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl text-slate-500 dark:text-slate-400 bg-transparent">
              Данных нет. Нажмите "Скачать патчи" в верхнем меню или выберите другую сущность.
           </div>
        )}
@@ -1098,11 +1329,11 @@ function ChampionHistoryView() {
                     <span className="bg-slate-900 text-white px-3 py-1 rounded-md text-xs font-bold shadow-sm">Patch {item.patch_version}</span>
                     
                 </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm hover:shadow-md transition-all hover:border-blue-200 group-hover:translate-x-1 duration-300">
-                   <div className="flex items-start justify-between mb-5 pb-4 border-b border-slate-100">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-sm hover:shadow-md transition-all hover:border-blue-200 dark:hover:border-blue-600/60 group-hover:translate-x-1 duration-300">
+                   <div className="flex items-start justify-between mb-5 pb-4 border-b border-slate-100 dark:border-slate-800">
                        <div>
-                            <h3 className="text-xl font-bold text-slate-900">{item.change.title}</h3>
-                            {item.change.summary && <p className="text-sm text-slate-500 mt-2 italic leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">"{item.change.summary}"</p>}
+                            <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{item.change.title}</h3>
+                            {item.change.summary && <p className="text-sm text-slate-500 dark:text-slate-300 mt-2 italic leading-relaxed bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">"{item.change.summary}"</p>}
                        </div>
                        <Badge type={item.change.change_type} />
                    </div>
@@ -1111,8 +1342,8 @@ function ChampionHistoryView() {
                          <div key={i} className="animate-in fade-in duration-500 delay-75">
                              {block.title && (
                                  <div className="flex items-center gap-3 mb-3">
-                                     {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 shadow-sm" />}
-                                     <h4 className="font-bold text-slate-800 text-sm border-b-2 border-transparent hover:border-blue-500 transition-colors pb-0.5">{block.title}</h4>
+                                     {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm" />}
+                                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-sm border-b-2 border-transparent hover:border-blue-500 transition-colors pb-0.5">{block.title}</h4>
                                  </div>
                              )}
                              <ul className="space-y-2">
@@ -1122,18 +1353,18 @@ function ChampionHistoryView() {
                                      const isNew = lower.includes("новое") || lower.includes("new");
                                      const isRemoved = lower.includes("удалено") || lower.includes("removed");
                                      const liClasses = cn(
-                                       "text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100 hover:bg-blue-50/50 transition-colors",
-                                       isNew && "bg-emerald-50 text-emerald-900",
-                                       isRemoved && "bg-red-50 text-red-900",
+                                       "text-sm text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700 hover:bg-blue-50/50 dark:hover:bg-slate-700 transition-colors",
+                                       isNew && "bg-emerald-50 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-200",
+                                       isRemoved && "bg-red-50 text-red-900 dark:bg-red-900/30 dark:text-red-200",
                                      );
                                      return (
                                        <li key={j} className={liClasses}>
                                           <span
                                             dangerouslySetInnerHTML={{
                                               __html: highlightSpecialTags(
-                                                change
-                                                  .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900">$1</span>')
-                                                  .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
+                                    change
+                                      .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900 dark:text-slate-100">$1</span>')
+                                      .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
                                               ),
                                             }}
                                           />
@@ -1157,22 +1388,22 @@ function PatchReleaseView({ data }: { data: PatchData | null }) {
   if (!data) return <EmptyState />;
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex items-baseline justify-between border-b border-slate-100 pb-4">
-        <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">Патч {data.version}</h2>
-        <span className="text-slate-500 text-xs font-medium bg-slate-100 px-3 py-1 rounded-full">Riot Games Official</span>
+      <div className="flex items-baseline justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+        <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-3">Патч {data.version}</h2>
+        <span className="text-slate-500 dark:text-slate-400 text-xs font-medium bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full">Riot Games Official</span>
       </div>
       <div className="grid gap-4">
         {data.patch_notes.length === 0 ? (
           <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50 text-slate-500">Патч-ноты не найдены.</div>
         ) : (
           data.patch_notes.map((note) => (
-            <div key={note.id} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow group">
+            <div key={note.id} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow group">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex gap-4">
                   <ChampionIcon url={cleanUrl(note.image_url)} name={note.title} />
                   <div>
-                    <h3 className="text-xl font-bold text-slate-900">{note.title}</h3>
-                    {note.summary && <p className="text-sm text-slate-500 italic mt-1 border-l-2 border-slate-200 pl-2 max-w-2xl">{note.summary}</p>}
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{note.title}</h3>
+                    {note.summary && <p className="text-sm text-slate-500 dark:text-slate-300 italic mt-1 border-l-2 border-slate-200 dark:border-slate-700 pl-2 max-w-2xl">{note.summary}</p>}
                   </div>
                 </div>
                 <Badge type={note.change_type} />
@@ -1182,8 +1413,8 @@ function PatchReleaseView({ data }: { data: PatchData | null }) {
                       <div key={i}>
                           {block.title && (
                              <div className="flex items-center gap-2 mb-2">
-                                 {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-6 h-6 rounded bg-slate-100" />}
-                                 <h4 className="font-bold text-slate-800 text-sm">{block.title}</h4>
+                                 {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-800" />}
+                                 <h4 className="font-bold text-slate-800 dark:text-slate-100 text-sm">{block.title}</h4>
                              </div>
                           )}
                           <ul className="space-y-2">
@@ -1192,9 +1423,9 @@ function PatchReleaseView({ data }: { data: PatchData | null }) {
                                 const isNew = lower.includes("новое") || lower.includes("new");
                                 const isRemoved = lower.includes("удалено") || lower.includes("removed");
                                 const liClasses = cn(
-                                  "text-slate-700 text-sm leading-relaxed rounded-md px-2 py-1",
-                                  isNew && "bg-emerald-50",
-                                  isRemoved && "bg-red-50",
+                                  "text-slate-700 dark:text-slate-200 text-sm leading-relaxed rounded-md px-2 py-1",
+                                  isNew && "bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-200",
+                                  isRemoved && "bg-red-50 dark:bg-red-900/30 dark:text-red-200",
                                 );
                                 return (
                                   <li key={j} className={liClasses}>
@@ -1202,7 +1433,7 @@ function PatchReleaseView({ data }: { data: PatchData | null }) {
                                         dangerouslySetInnerHTML={{
                                           __html: highlightSpecialTags(
                                             change
-                                              .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900">$1</span>')
+                                              .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold text-slate-900 dark:text-slate-100">$1</span>')
                                               .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
                                           ),
                                         }}
@@ -1254,28 +1485,28 @@ function ChampionSelect({ items, selected, onSelect }: { items: ChampionListItem
 
     return (
         <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 rounded-xl bg-white shadow-sm cursor-pointer hover:border-blue-300 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors" />
+            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-500 transition-all group" onClick={() => setIsOpen(!isOpen)}>
+                <Search className="w-4 h-4 text-slate-400 dark:text-slate-300 group-hover:text-blue-500 transition-colors" />
                 {selected ? (
                     <div className="flex items-center gap-3 flex-1">
-                        <img src={selected.icon_url} className="w-6 h-6 rounded-full border border-slate-100" />
-                        <span className="font-bold text-slate-700">{selected.name}</span>
+                        <img src={selected.icon_url} className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700" />
+                        <span className="font-bold text-slate-700 dark:text-slate-100">{selected.name}</span>
                     </div>
                 ) : (
-                    <input type="text" placeholder="Выберите чемпиона..." className="flex-1 bg-transparent outline-none text-sm cursor-pointer" value={query} onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }} onClick={(e) => e.stopPropagation()} />
+                    <input type="text" placeholder="Выберите чемпиона..." className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500" value={query} onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }} onClick={(e) => e.stopPropagation()} />
                 )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
+                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-300 transition-transform", isOpen && "rotate-180")} />
             </div>
             {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
-                    <input type="text" placeholder="Поиск..." className="w-full px-3 py-2 border-b border-slate-100 outline-none text-sm mb-1 sticky top-0 bg-white" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
-                    {filtered.length === 0 ? <div className="p-4 text-center text-xs text-slate-400">Нет совпадений</div> : filtered.map(item => (
-                        <div key={item.name} onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors">
-                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100" loading="lazy" />
+                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
+                    <input type="text" placeholder="Поиск..." className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
+                    {filtered.length === 0 ? <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div> : filtered.map(item => (
+                        <div key={item.name} onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-800" loading="lazy" />
                             <div className="flex flex-col">
-                              <span className="text-sm font-medium text-slate-700">{item.name}</span>
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-100">{item.name}</span>
                               {item.name_en !== item.name && (
-                                <span className="text-[11px] text-slate-400">{item.name_en}</span>
+                                <span className="text-[11px] text-slate-400 dark:text-slate-500">{item.name_en}</span>
                               )}
                             </div>
                             {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 ml-auto" />}
@@ -1319,49 +1550,49 @@ function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], sele
 
     return (
         <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 rounded-xl bg-white shadow-sm cursor-pointer hover:border-blue-300 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors" />
+            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-500 transition-all group" onClick={() => setIsOpen(!isOpen)}>
+                <Search className="w-4 h-4 text-slate-400 dark:text-slate-300 group-hover:text-blue-500 transition-colors" />
                 {selected ? (
                     <div className="flex items-center gap-3 flex-1">
-                        <img src={cleanUrl(selected.icon_url)} className="w-6 h-6 rounded-full border border-slate-100" />
-                        <span className="font-bold text-slate-700">{selected.name}</span>
+                        <img src={cleanUrl(selected.icon_url)} className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700" />
+                        <span className="font-bold text-slate-700 dark:text-slate-100">{selected.name}</span>
                     </div>
                 ) : (
                     <input
                       type="text"
                       placeholder="Выберите руну..."
-                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer"
+                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
                       value={query}
                       onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }}
                       onClick={(e) => e.stopPropagation()}
                     />
                 )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
+                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-300 transition-transform", isOpen && "rotate-180")} />
             </div>
             {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
+                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
                     <input
                       type="text"
                       placeholder="Поиск (ru/en)..."
-                      className="w-full px-3 py-2 border-b border-slate-100 outline-none text-sm mb-1 sticky top-0 bg-white"
+                      className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       autoFocus
                     />
                     {filtered.length === 0 ? (
-                      <div className="p-4 text-center text-xs text-slate-400">Нет совпадений</div>
+                      <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div>
                     ) : (
                       filtered.map((item, idx) => (
                         <div
                           key={item.name + idx}
                           onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
-                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors"
+                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors"
                         >
-                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100" loading="lazy" />
+                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-800" loading="lazy" />
                             <div className="flex flex-col">
-                              <span className="text-sm font-medium text-slate-700">{item.name}</span>
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-100">{item.name}</span>
                               {item.nameEn !== item.name && (
-                                <span className="text-[11px] text-slate-400">{item.nameEn}</span>
+                                <span className="text-[11px] text-slate-400 dark:text-slate-500">{item.nameEn}</span>
                               )}
                             </div>
                             {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 ml-auto" />}
@@ -1406,49 +1637,49 @@ function ItemSelect({ items, selected, onSelect }: { items: ItemListItem[], sele
 
     return (
         <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 rounded-xl bg-white shadow-sm cursor-pointer hover:border-blue-300 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors" />
+            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-500 transition-all group" onClick={() => setIsOpen(!isOpen)}>
+                <Search className="w-4 h-4 text-slate-400 dark:text-slate-300 group-hover:text-blue-500 transition-colors" />
                 {selected ? (
                     <div className="flex items-center gap-3 flex-1">
-                        <img src={cleanUrl(selected.icon_url)} className="w-6 h-6 rounded-full border border-slate-100" />
-                        <span className="font-bold text-slate-700">{selected.name}</span>
+                        <img src={cleanUrl(selected.icon_url)} className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700" />
+                        <span className="font-bold text-slate-700 dark:text-slate-100">{selected.name}</span>
                     </div>
                 ) : (
                     <input
                       type="text"
                       placeholder="Выберите предмет..."
-                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer"
+                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
                       value={query}
                       onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }}
                       onClick={(e) => e.stopPropagation()}
                     />
                 )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
+                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-300 transition-transform", isOpen && "rotate-180")} />
             </div>
             {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
+                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
                     <input
                       type="text"
                       placeholder="Поиск (ru/en)..."
-                      className="w-full px-3 py-2 border-b border-slate-100 outline-none text-sm mb-1 sticky top-0 bg-white"
+                      className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       autoFocus
                     />
                     {filtered.length === 0 ? (
-                      <div className="p-4 text-center text-xs text-slate-400">Нет совпадений</div>
+                      <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div>
                     ) : (
                       filtered.map(item => (
                         <div
                           key={item.name + item.nameEn}
                           onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
-                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 cursor-pointer transition-colors"
+                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors"
                         >
-                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100" loading="lazy" />
+                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-800" loading="lazy" />
                             <div className="flex flex-col">
-                              <span className="text-sm font-medium text-slate-700">{item.name}</span>
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-100">{item.name}</span>
                               {item.nameEn !== item.name && (
-                                <span className="text-[11px] text-slate-400">{item.nameEn}</span>
+                                <span className="text-[11px] text-slate-400 dark:text-slate-500">{item.nameEn}</span>
                               )}
                             </div>
                             {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 ml-auto" />}
@@ -1471,15 +1702,15 @@ function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
   if (diffs.length === 0) return <EmptyState message="Находится в разработке, собираем статистику." />;
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-      <h2 className="text-2xl font-bold text-slate-900">Сдвиги Меты</h2>
+      <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Сдвиги Меты</h2>
       <div className="grid gap-3">
         {diffs.map((diff, idx) => (
-          <div key={idx} className="bg-white border border-slate-200 rounded-lg p-4 flex items-center justify-between shadow-sm hover:border-blue-200 transition-colors">
+          <div key={idx} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 flex items-center justify-between shadow-sm hover:border-blue-200 dark:hover:border-blue-600/60 transition-colors">
             <div className="flex items-center gap-4">
                <ChampionIcon url={cleanUrl(diff.champion_image_url)} name={diff.champion_name} />
                <div>
-                 <div className="font-bold text-slate-900">{diff.champion_name}</div>
-                 <div className="text-xs text-slate-500 uppercase font-semibold">{diff.role}</div>
+                 <div className="font-bold text-slate-900 dark:text-slate-100">{diff.champion_name}</div>
+                 <div className="text-xs text-slate-500 dark:text-slate-400 uppercase font-semibold">{diff.role}</div>
                </div>
             </div>
             <div className="flex gap-8 text-right items-center">
@@ -1501,20 +1732,20 @@ function PredictionsView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
   if (predicted.length === 0) return <EmptyState message="Находится в разработке, собираем статистику." />;
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-      <h2 className="text-2xl font-bold text-slate-900">Прогноз vs Реальность</h2>
+      <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Прогноз vs Реальность</h2>
       <div className="grid md:grid-cols-2 gap-4">
         {predicted.map((item, idx) => (
-          <div key={idx} className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm relative overflow-hidden hover:shadow-md transition-shadow">
-             <div className={cn("absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-lg border-l border-b border-slate-100", item.predicted_change === "Buff" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700")}>
+          <div key={idx} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-xl shadow-sm relative overflow-hidden hover:shadow-md transition-shadow">
+             <div className={cn("absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-lg border-l border-b border-slate-100 dark:border-slate-700", item.predicted_change === "Buff" ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-200" : "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-200")}>
                {item.predicted_change?.toUpperCase()}
              </div>
              <div className="flex items-center gap-3 mb-3">
                 <ChampionIcon url={cleanUrl(item.champion_image_url)} name={item.champion_name} />
-                <h3 className="text-lg font-bold text-slate-900">{item.champion_name}</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">{item.champion_name}</h3>
              </div>
-             <div className="text-sm text-slate-500 mb-4">{item.predicted_change === "Buff" ? "Ожидалось усиление" : "Ожидалось ослабление"}</div>
-             <div className="flex items-center justify-between text-sm bg-slate-50 p-3 rounded border border-slate-100">
-                <span className="text-slate-500 font-medium">Результат (Win Rate):</span>
+             <div className="text-sm text-slate-500 dark:text-slate-300 mb-4">{item.predicted_change === "Buff" ? "Ожидалось усиление" : "Ожидалось ослабление"}</div>
+             <div className="flex items-center justify-between text-sm bg-slate-50 dark:bg-slate-800 p-3 rounded border border-slate-100 dark:border-slate-700">
+                <span className="text-slate-500 dark:text-slate-300 font-medium">Результат (Win Rate):</span>
                 <div className="flex items-center gap-2">
                     {item.win_rate_diff !== 0 && (<span className={cn("font-bold", item.win_rate_diff > 0 ? "text-green-600" : "text-red-600")}>{item.win_rate_diff > 0 ? "+" : ""}{item.win_rate_diff}%</span>)}
                     {item.win_rate_diff === 0 && <span className="text-slate-400 font-bold">Нет данных</span>}
@@ -1696,12 +1927,13 @@ function RealStatsView() {
 
     const roles = Array.from(new Set(stats.map(s => normalizeRole(s.role) || "").filter(Boolean)));
     const regions = Array.from(new Set(stats.map(s => (s.region || "").trim()).filter(Boolean)));
-    const tiers = Array.from(new Set(stats.map(s => (s.tier || "").trim()).filter(Boolean)));
+    const normalizeTier = (t?: string | null) => (t || "").trim().toLowerCase();
+    const tiersRawLower = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
 
     const filteredStats = stats.filter(row => {
         const matchRole = selectedRole === "all" || normalizeRole(row.role) === selectedRole;
         const matchRegion = selectedRegion === "all" || (row.region || "") === selectedRegion;
-        const matchTier = selectedTier === "all" || (row.tier || "") === selectedTier;
+        const matchTier = selectedTier === "all" || normalizeTier(row.tier) === normalizeTier(selectedTier);
         return matchRole && matchRegion && matchTier;
     });
 
@@ -1711,31 +1943,21 @@ function RealStatsView() {
         <div className="space-y-6 animate-in fade-in duration-500">
             <div className="flex items-center justify-between">
                 <div className="flex flex-col gap-1">
-                  <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-3">
                       <DbIcon className="w-6 h-6 text-blue-500" />
                       Live Статистика
                   </h2>
-                  {selectedPatch && (
-                    <span className="text-xs text-slate-500">
-                      Патч: {selectedPatch}
-                    </span>
-                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-slate-500">Патч</span>
-                        {patches.length > 0 ? (
-                            <select 
-                                className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
-                                value={selectedPatch}
-                                onChange={(e) => setSelectedPatch(e.target.value)}
-                            >
-                                {patches.map(p => <option key={p} value={p}>{p}</option>)}
-                            </select>
-                        ) : (
-                            <span className="text-sm text-slate-400">Загрузка...</span>
-                        )}
-                    </div>
+                    <IconSelect
+                        label="Патч"
+                        value={selectedPatch}
+                        onChange={setSelectedPatch}
+                        options={[
+                            { value: "all", label: "Все", disabled: true },
+                            ...patches.map(p => ({ value: p, label: p }))
+                        ]}
+                    />
                     <IconSelect
                         label="Роль"
                         value={selectedRole}
@@ -1745,24 +1967,27 @@ function RealStatsView() {
                             ...roles.map(r => ({ value: r, label: r || "—", icon: getRoleIcon(r) || undefined }))
                         ]}
                     />
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-slate-500">Сервер</span>
-                        <select
-                            className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500 uppercase"
-                            value={selectedRegion}
-                            onChange={(e) => setSelectedRegion(e.target.value)}
-                        >
-                            <option value="all">Все</option>
-                            {regions.map(r => <option key={r} value={r}>{r || "—"}</option>)}
-                        </select>
-                    </div>
+                    <IconSelect
+                        label="Сервер"
+                        value={selectedRegion}
+                        onChange={setSelectedRegion}
+                        options={[
+                            { value: "all", label: "Все" },
+                            ...regions.map(r => ({ value: r, label: r || "—" }))
+                        ]}
+                    />
                     <IconSelect
                         label="Ранг"
                         value={selectedTier}
                         onChange={setSelectedTier}
                         options={[
                             { value: "all", label: "Все" },
-                            ...tiers.map(t => ({ value: t, label: t || "—", icon: getRankIcon(t) || undefined }))
+                            { value: "challenger", label: "Challenger", icon: getRankIcon("challenger") || undefined, disabled: !tiersRawLower.includes("challenger") },
+                            { value: "grandmaster", label: "Grandmaster", icon: getRankIcon("grandmaster") || undefined, disabled: !tiersRawLower.includes("grandmaster") },
+                            { value: "master", label: "Master", icon: getRankIcon("master") || undefined, disabled: !tiersRawLower.includes("master") },
+                            { value: "diamond", label: "Diamond", icon: getRankIcon("diamond") || undefined, disabled: !tiersRawLower.includes("diamond") },
+                            { value: "emerald", label: "Emerald", icon: getRankIcon("emerald") || undefined, disabled: !tiersRawLower.includes("emerald") },
+                            { value: "platinum", label: "Platinum", icon: getRankIcon("platinum") || undefined, disabled: !tiersRawLower.includes("platinum") },
                         ]}
                     />
                 </div>
@@ -1778,12 +2003,10 @@ function RealStatsView() {
             ) : filteredStats.length === 0 ? (
                  <EmptyState message="Нет данных статистики для выбранного патча." />
             ) : (
-                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm">
                     <table className="w-full text-sm text-left">
-                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700">
                             <tr>
-                                <th className="px-4 py-3">Ранг</th>
-                                <th className="px-4 py-3">Регион</th>
                                 <th className="px-4 py-3">Чемпион</th>
                                 <th className="px-4 py-3">Роль</th>
                                 <th className="px-4 py-3 text-right">Win Rate</th>
@@ -1792,18 +2015,10 @@ function RealStatsView() {
                                 <th className="px-4 py-3 text-right">Матчей</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                             {filteredStats.map((row, idx) => (
-                                <tr key={idx} className="hover:bg-blue-50/50 transition-colors">
-                                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">
-                                        {getRankIcon(row.tier) ? (
-                                            <img src={getRankIcon(row.tier)!} alt={row.tier} className="w-7 h-7" />
-                                        ) : (
-                                            row.tier
-                                        )}
-                                    </td>
-                                    <td className="px-4 py-3 text-slate-500 text-xs uppercase font-semibold">{row.region || "—"}</td>
-                                    <td className="px-4 py-3 font-medium text-slate-900 flex items-center gap-3">
+                                <tr key={idx} className="hover:bg-blue-50/50 dark:hover:bg-slate-800 transition-colors">
+                                    <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100 flex items-center gap-3">
                                         <ChampionIcon url={getChampIcon(row.champion_id)} name={getChampName(row.champion_id)} size="sm" />
                                         <div className="flex flex-col leading-tight">
                                             <span>{getChampName(row.champion_id)}</span>

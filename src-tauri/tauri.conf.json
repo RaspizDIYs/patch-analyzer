@@ -12,6 +12,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhERjE3RjI1NjNCNDQ3M0QKUldROVI3UmpKWC94amJRMEplb1crSVAyM0FPSmVXSW1xa20xTWJ6OTlDOUhsTHI5ZjJ0YjRtaXcK",
       "endpoints": [
+        "https://github.com/RaspizDIYs/patch-analyzer/releases/download/{{channel}}/latest.json",
         "https://github.com/RaspizDIYs/patch-analyzer/releases/latest/download/latest.json"
       ]
     }
