@@ -1,8 +1,0 @@
-{
-  "tag_name": "v1.0.1-beta",
-  "name": "Beta Release v1.0.1",
-  "body": "Beta канал обновлений\n\nНовые возможности:\n- Поддержка каналов обновлений (stable/beta)\n- Темная тема\n- Адаптивный дизайн\n- Улучшения настроек",
-  "prerelease": true,
-  "draft": false
-}
-

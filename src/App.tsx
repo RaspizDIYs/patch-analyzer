@@ -138,11 +138,16 @@ function compareVersions(v1: string, v2: string) {
     return 0;
 }
 
+// Сортировка патчей от новых к старым (большие версии первыми)
+function sortPatchesNewestFirst(patches: string[]): string[] {
+    return [...patches].sort((a, b) => compareVersions(b, a));
+}
+
 import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 
-function IconSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string; disabled?: boolean }[] }) {
+function IconSelect({ label, value, onChange, options, compact = false }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string; disabled?: boolean }[]; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
@@ -177,10 +182,11 @@ function IconSelect({ label, value, onChange, options }: { label: string; value:
         className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500 dark:focus:border-blue-400 text-slate-700 dark:text-slate-100"
         onClick={toggle}
         type="button"
+        title={current?.label || label}
       >
         <span className="text-slate-500 dark:text-slate-300">{label}</span>
         {current?.icon && <img src={current.icon} alt={current.label} className="w-4 h-4" />}
-        <span>{current?.label || "Все"}</span>
+        {(!compact || value === "all") && <span>{current?.label || "Все"}</span>}
       </button>
       {open && (
         <div className="absolute z-20 mt-1 w-full min-w-[140px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md shadow-sm">
@@ -189,9 +195,10 @@ function IconSelect({ label, value, onChange, options }: { label: string; value:
               key={opt.value}
               className={cn("flex items-center gap-2 px-3 py-2 text-sm", opt.disabled ? "text-slate-300 dark:text-slate-600 cursor-not-allowed" : "hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer text-slate-700 dark:text-slate-100")}
               onClick={() => { if (opt.disabled) return; onChange(opt.value); setOpen(false); }}
+              title={opt.label}
             >
               {opt.icon && <img src={opt.icon} alt={opt.label} className="w-4 h-4" />}
-              <span>{opt.label}</span>
+              {(!compact || opt.value === "all") && <span>{opt.label}</span>}
             </div>
           ))}
         </div>
@@ -638,11 +645,33 @@ function TierListView() {
   const [data, setData] = useState<TierEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
-  const [patchWindow, setPatchWindow] = useState<number>(20);
+  const [patchWindow, setPatchWindow] = useState<number>(() => {
+    const saved = localStorage.getItem("patchWindow");
+    return saved ? parseInt(saved, 10) : 20;
+  });
   const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
   const [allRunes, setAllRunes] = useState<RuneListItem[]>([]);
   const [allItems, setAllItems] = useState<ItemListItem[]>([]);
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const navigate = useNavigate();
+
+  // Синхронизация с localStorage и обновление при изменении из истории изменений
+  useEffect(() => {
+    const handlePatchWindowChange = (e: Event) => {
+      const customEvent = e as CustomEvent<number>;
+      if (customEvent.detail !== patchWindow) {
+        setPatchWindow(customEvent.detail);
+      }
+    };
+    window.addEventListener("patchWindowChanged", handlePatchWindowChange as EventListener);
+    return () => window.removeEventListener("patchWindowChanged", handlePatchWindowChange as EventListener);
+  }, [patchWindow]);
+
+  // Сохраняем в localStorage при изменении
+  useEffect(() => {
+    localStorage.setItem("patchWindow", patchWindow.toString());
+  }, [patchWindow]);
 
   useEffect(() => {
     setLoading(true);
@@ -720,6 +749,45 @@ function TierListView() {
     return entry.category === "ItemsRunes";
   });
 
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === "desc" ? "asc" : "desc");
+    } else {
+      setSortColumn(column);
+      setSortDirection("desc");
+    }
+  };
+
+  const sortedData = [...filtered].sort((a, b) => {
+    if (!sortColumn) return 0;
+    
+    let aVal: number = 0;
+    let bVal: number = 0;
+    
+    switch (sortColumn) {
+      case "buffs":
+        aVal = a.buffs;
+        bVal = b.buffs;
+        break;
+      case "nerfs":
+        aVal = a.nerfs;
+        bVal = b.nerfs;
+        break;
+      case "adjusted":
+        aVal = a.adjusted;
+        bVal = b.adjusted;
+        break;
+      default:
+        return 0;
+    }
+    
+    if (sortDirection === "desc") {
+      return bVal - aVal;
+    } else {
+      return aVal - bVal;
+    }
+  });
+
   const resolveIconAndName = (entry: TierEntry) => {
     if (entry.category === "Champions") {
       const c = allChamps.find(ch =>
@@ -760,15 +828,14 @@ function TierListView() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Тир-лист</h2>
-          <div className="flex items-center gap-2 text-sm text-slate-500">
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
             <span>Патчей:</span>
-            <select
-              className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
-              value={patchWindow}
-              onChange={e => setPatchWindow(Number(e.target.value))}
-            >
-              {[1,3,5,10,20].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
+            <IconSelect
+              label=""
+              value={patchWindow.toString()}
+              onChange={(v) => setPatchWindow(Number(v))}
+              options={[1,3,5,10,20].map(n => ({ value: n.toString(), label: n.toString() }))}
+            />
           </div>
         </div>
         <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
@@ -806,46 +873,74 @@ function TierListView() {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden">
           <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 px-4 py-2">
             <div className="col-span-6">Сущность</div>
-            <div className="col-span-2 text-center text-emerald-700">↑ Buff</div>
-            <div className="col-span-2 text-center text-red-700">↓ Nerf</div>
-            <div className="col-span-2 text-center text-slate-600">⇄ Изм.</div>
+            <div 
+              className="col-span-2 text-center text-emerald-700 dark:text-emerald-400 cursor-pointer hover:text-emerald-800 dark:hover:text-emerald-300 select-none transition-colors"
+              onClick={() => handleSort("buffs")}
+            >
+              <div className="flex items-center justify-center gap-1">
+                ↑ Buff
+                {sortColumn === "buffs" && (
+                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                )}
+              </div>
+            </div>
+            <div 
+              className="col-span-2 text-center text-red-700 dark:text-red-400 cursor-pointer hover:text-red-800 dark:hover:text-red-300 select-none transition-colors"
+              onClick={() => handleSort("nerfs")}
+            >
+              <div className="flex items-center justify-center gap-1">
+                ↓ Nerf
+                {sortColumn === "nerfs" && (
+                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                )}
+              </div>
+            </div>
+            <div 
+              className="col-span-2 text-center text-slate-600 dark:text-slate-400 cursor-pointer hover:text-slate-800 dark:hover:text-slate-200 select-none transition-colors"
+              onClick={() => handleSort("adjusted")}
+            >
+              <div className="flex items-center justify-center gap-1">
+                ⇄ Изм.
+                {sortColumn === "adjusted" && (
+                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                )}
+              </div>
+            </div>
           </div>
-          <div className="divide-y divide-slate-100">
-            {filtered.map((entry, idx) => {
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {sortedData.map((entry, idx) => {
               const { icon, name } = resolveIconAndName(entry);
               const score = entry.buffs - entry.nerfs;
               return (
                 <button
                   key={entry.name + entry.category + idx}
                   onClick={() => handleOpenHistory(entry)}
-                  className="w-full flex items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800 transition-colors"
+                  className="w-full grid grid-cols-12 items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800 transition-colors"
                 >
-                  <div className="flex items-center gap-3 col-span-6 flex-1">
-                    <span className="w-6 text-[11px] text-slate-400 font-mono">#{idx + 1}</span>
+                  <div className="col-span-6 flex items-center gap-3">
+                    <span className="w-6 text-[11px] text-slate-400 dark:text-slate-500 font-mono">#{idx + 1}</span>
                     {icon && (
                       <img
                         src={cleanUrl(icon)}
-                        className="w-8 h-8 rounded-full border border-slate-200 bg-slate-100 object-cover"
+                        className="w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 object-cover"
                       />
                     )}
                     {!icon && (
-                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 border border-slate-200 dark:border-slate-700">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700">
                         {name.slice(0, 2)}
                       </div>
                     )}
                     <span className="font-semibold text-slate-800 dark:text-slate-100">{name}</span>
-                    <span className="ml-2 text-[11px] text-slate-400">
+                    <span className="ml-2 text-[11px] text-slate-400 dark:text-slate-500">
                       {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
                     </span>
-                    <span className="ml-auto text-[11px] font-mono text-slate-400">
+                    <span className="ml-auto text-[11px] font-mono text-slate-400 dark:text-slate-500">
                       score {score >= 0 ? `+${score}` : score}
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-4 w-40 text-xs">
-                    <span className="text-center text-emerald-700 font-semibold">+{entry.buffs}</span>
-                    <span className="text-center text-red-700 font-semibold">-{entry.nerfs}</span>
-                    <span className="text-center text-slate-600 font-semibold">{entry.adjusted}</span>
-                  </div>
+                  <div className="col-span-2 text-center text-xs text-emerald-700 dark:text-emerald-400 font-semibold">+{entry.buffs}</div>
+                  <div className="col-span-2 text-center text-xs text-red-700 dark:text-red-400 font-semibold">-{entry.nerfs}</div>
+                  <div className="col-span-2 text-center text-xs text-slate-600 dark:text-slate-400 font-semibold">{entry.adjusted}</div>
                 </button>
               );
             })}
@@ -877,6 +972,18 @@ function ChampionHistoryView() {
   const [aggregatedGroups, setAggregatedGroups] = useState<{ title: string | null, icon: string | null, changes: string[] }[]>([]);
   const [loading, setLoading] = useState(false);
   const [prefill, setPrefill] = useState<{ type: "champion" | "rune" | "item"; name: string } | null>(null);
+  
+  // Количество патчей для фильтрации (синхронизируется с тир-листом через localStorage)
+  const [patchWindow, setPatchWindow] = useState<number>(() => {
+    const saved = localStorage.getItem("patchWindow");
+    return saved ? parseInt(saved, 10) : 20;
+  });
+
+  // Сохраняем в localStorage при изменении и отправляем событие для синхронизации
+  useEffect(() => {
+    localStorage.setItem("patchWindow", patchWindow.toString());
+    window.dispatchEvent(new CustomEvent("patchWindowChanged", { detail: patchWindow }));
+  }, [patchWindow]);
 
   // Чемпионы из бэкенда (DDragon)
   useEffect(() => {
@@ -1078,6 +1185,13 @@ function ChampionHistoryView() {
   useEffect(() => {
       if (!history || history.length === 0) return;
 
+      // Фильтруем историю по количеству патчей (берем самые новые)
+      const uniquePatches = Array.from(new Set(history.map(h => h.patch_version)));
+      // Сортируем от новых к старым и берем первые N патчей (самые новые)
+      const sortedPatches = sortPatchesNewestFirst(uniquePatches);
+      const recentPatches = sortedPatches.slice(0, patchWindow);
+      const filteredHistory = history.filter(h => recentPatches.includes(h.patch_version));
+
       // 1. Calculate Net Changes for Summary
       // Strategy: Group by Ability/Stat Title. Then try to parse changes.
       // If we detect "Stat: X -> Y" and later "Stat: Y -> Z", we want "Stat: X -> Z".
@@ -1086,7 +1200,7 @@ function ChampionHistoryView() {
 
       // Process oldest to newest to build the chain
       // Sort by version ascending since dates might be identical
-      const chronologicalHistory = [...history].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
+      const chronologicalHistory = [...filteredHistory].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
 
       chronologicalHistory.forEach(h => {
           if (h.change.details) {
@@ -1172,12 +1286,30 @@ function ChampionHistoryView() {
       });
 
       setAggregatedGroups(finalGroups);
-  }, [history]);
+  }, [history, patchWindow]);
+
+  // Фильтруем историю для отображения по количеству патчей (берем самые новые)
+  const uniquePatches = Array.from(new Set(history.map(h => h.patch_version)));
+  // Сортируем от новых к старым и берем первые N патчей (самые новые)
+  const sortedPatches = sortPatchesNewestFirst(uniquePatches);
+  const recentPatches = sortedPatches.slice(0, patchWindow);
+  const filteredHistoryForDisplay = history.filter(h => recentPatches.includes(h.patch_version));
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">История изменений</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">История изменений</h2>
+            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+              <span>Патчей:</span>
+              <IconSelect
+                label=""
+                value={patchWindow.toString()}
+                onChange={(v) => setPatchWindow(Number(v))}
+                options={[1,3,5,10,20].map(n => ({ value: n.toString(), label: n.toString() }))}
+              />
+            </div>
+          </div>
            <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
              {[
                { key: "champion", label: "Чемпионы" },
@@ -1261,8 +1393,8 @@ function ChampionHistoryView() {
                          {entityType === "rune" && selectedRune && selectedRune.name}
                          {entityType === "item" && selectedItem && selectedItem.name}
                        </h3>
-                       <div className="text-xs text-slate-500 font-bold uppercase tracking-wider bg-white dark:bg-slate-800 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
-                         Общая сводка (20 патчей)
+                       <div className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider bg-white dark:bg-slate-800 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
+                         Общая сводка ({patchWindow} {patchWindow === 1 ? 'патч' : patchWindow < 5 ? 'патча' : 'патчей'})
                        </div>
                    </div>
               </div>
@@ -1321,8 +1453,8 @@ function ChampionHistoryView() {
              Данных нет. Нажмите "Скачать патчи" в верхнем меню или выберите другую сущность.
           </div>
        )}
-       <div className="relative border-l-2 border-slate-200 ml-6 space-y-8 py-2 pb-10">
-          {[...history].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
+       <div className="relative border-l-2 border-slate-200 dark:border-slate-700 ml-6 space-y-8 py-2 pb-10">
+          {[...filteredHistoryForDisplay].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
              <div key={idx} className="relative pl-8 group">
                 <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-slate-200 border-2 border-white group-hover:bg-blue-500 transition-colors ring-4 ring-white" />
                 <div className="flex items-center gap-3 mb-3">
@@ -1762,14 +1894,16 @@ function RealStatsView() {
     const [stats, setStats] = useState<SupabaseChampionStats[]>([]);
     const [patches, setPatches] = useState<string[]>([]);
     const [selectedPatch, setSelectedPatch] = useState<string>("");
-    const [selectedRole, setSelectedRole] = useState<string>("all");
+    const [selectedRole, setSelectedRole] = useState<string>("fill");
     const [selectedRegion, setSelectedRegion] = useState<string>("all");
-    const [selectedTier, setSelectedTier] = useState<string>("all");
+    const [selectedTier, setSelectedTier] = useState<string>("platinum");
     const [loading, setLoading] = useState(false);
     const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
     const [champDict, setChampDict] = useState<Record<string, ChampionMeta>>({});
     const [ddragonVersion, setDdragonVersion] = useState<string>("15.24.1");
     const [error, setError] = useState<string | null>(null);
+    const [sortColumn, setSortColumn] = useState<string | null>(null);
+    const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
     useEffect(() => {
         invoke<string[]>("get_available_stats_patches").then(list => {
@@ -1913,11 +2047,81 @@ function RealStatsView() {
     const normalizeTier = (t?: string | null) => (t || "").trim().toLowerCase();
     const tiersRawLower = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
 
+    useEffect(() => {
+        if (!stats.length) return;
+
+        const rolesList = Array.from(new Set(stats.map(s => normalizeRole(s.role) || "").filter(Boolean)));
+        if (rolesList.length === 1 && selectedRole !== rolesList[0]) {
+            setSelectedRole(rolesList[0]);
+        } else if (selectedRole === "all") {
+            if (rolesList.includes("fill")) setSelectedRole("fill");
+            else if (rolesList.length) setSelectedRole(rolesList[0]);
+        }
+
+        const regionList = Array.from(new Set(stats.map(s => (s.region || "").trim()).filter(Boolean)));
+        if (regionList.length === 1 && selectedRegion !== regionList[0]) {
+            setSelectedRegion(regionList[0]);
+        }
+
+        const tierList = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
+        const preferOrder = ["platinum", "emerald", "diamond", "master", "grandmaster", "challenger"];
+        const preferred = preferOrder.find(t => tierList.includes(t)) || tierList[0];
+
+        if (tierList.length === 1 && selectedTier !== tierList[0]) {
+            setSelectedTier(tierList[0]);
+        } else if (selectedTier === "all" || !tierList.includes(normalizeTier(selectedTier))) {
+            if (preferred) setSelectedTier(preferred);
+        }
+    }, [stats]);
+
     const filteredStats = stats.filter(row => {
         const matchRole = selectedRole === "all" || normalizeRole(row.role) === selectedRole;
         const matchRegion = selectedRegion === "all" || (row.region || "") === selectedRegion;
         const matchTier = selectedTier === "all" || normalizeTier(row.tier) === normalizeTier(selectedTier);
         return matchRole && matchRegion && matchTier;
+    });
+
+    const handleSort = (column: string) => {
+        if (sortColumn === column) {
+            setSortDirection(sortDirection === "desc" ? "asc" : "desc");
+        } else {
+            setSortColumn(column);
+            setSortDirection("desc");
+        }
+    };
+
+    const sortedStats = [...filteredStats].sort((a, b) => {
+        if (!sortColumn) return 0;
+        
+        let aVal: number = 0;
+        let bVal: number = 0;
+        
+        switch (sortColumn) {
+            case "win_rate":
+                aVal = a.win_rate || 0;
+                bVal = b.win_rate || 0;
+                break;
+            case "pick_rate":
+                aVal = a.pick_rate || 0;
+                bVal = b.pick_rate || 0;
+                break;
+            case "ban_rate":
+                aVal = a.ban_rate || 0;
+                bVal = b.ban_rate || 0;
+                break;
+            case "total_matches":
+                aVal = a.total_matches || 0;
+                bVal = b.total_matches || 0;
+                break;
+            default:
+                return 0;
+        }
+        
+        if (sortDirection === "desc") {
+            return bVal - aVal;
+        } else {
+            return aVal - bVal;
+        }
     });
 
     const hasBanFiltered = filteredStats.some(s => s.ban_rate !== null && s.ban_rate !== undefined);
@@ -1945,6 +2149,7 @@ function RealStatsView() {
                         label="Роль"
                         value={selectedRole}
                         onChange={setSelectedRole}
+                        compact
                         options={[
                             { value: "all", label: "Все" },
                             ...roles.map(r => ({ value: r, label: r || "—", icon: getRoleIcon(r) || undefined }))
@@ -1963,6 +2168,7 @@ function RealStatsView() {
                         label="Ранг"
                         value={selectedTier}
                         onChange={setSelectedTier}
+                        compact
                         options={[
                             { value: "all", label: "Все" },
                             { value: "challenger", label: "Challenger", icon: getRankIcon("challenger") || undefined, disabled: !tiersRawLower.includes("challenger") },
@@ -1992,14 +2198,56 @@ function RealStatsView() {
                             <tr>
                                 <th className="px-4 py-3">Чемпион</th>
                                 <th className="px-4 py-3">Роль</th>
-                                <th className="px-4 py-3 text-right">Win Rate</th>
-                                <th className="px-4 py-3 text-right">Pick Rate</th>
-                                {hasBanFiltered && <th className="px-4 py-3 text-right">Ban Rate</th>}
-                                <th className="px-4 py-3 text-right">Матчей</th>
+                                <th 
+                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
+                                    onClick={() => handleSort("win_rate")}
+                                >
+                                    <div className="flex items-center justify-end gap-2">
+                                        Win Rate
+                                        {sortColumn === "win_rate" && (
+                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                                        )}
+                                    </div>
+                                </th>
+                                <th 
+                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
+                                    onClick={() => handleSort("pick_rate")}
+                                >
+                                    <div className="flex items-center justify-end gap-2">
+                                        Pick Rate
+                                        {sortColumn === "pick_rate" && (
+                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                                        )}
+                                    </div>
+                                </th>
+                                {hasBanFiltered && (
+                                    <th 
+                                        className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
+                                        onClick={() => handleSort("ban_rate")}
+                                    >
+                                        <div className="flex items-center justify-end gap-2">
+                                            Ban Rate
+                                            {sortColumn === "ban_rate" && (
+                                                sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                                            )}
+                                        </div>
+                                    </th>
+                                )}
+                                <th 
+                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
+                                    onClick={() => handleSort("total_matches")}
+                                >
+                                    <div className="flex items-center justify-end gap-2">
+                                        Матчей
+                                        {sortColumn === "total_matches" && (
+                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                                        )}
+                                    </div>
+                                </th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {filteredStats.map((row, idx) => (
+                            {sortedStats.map((row, idx) => (
                                 <tr key={idx} className="hover:bg-blue-50/50 dark:hover:bg-slate-800 transition-colors">
                                     <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100 flex items-center gap-3">
                                         <ChampionIcon url={getChampIcon(row.champion_id)} name={getChampName(row.champion_id)} size="sm" />
