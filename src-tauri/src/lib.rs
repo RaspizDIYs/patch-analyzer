@@ -30,6 +30,7 @@ pub struct LogEntry {
     level: String,
     message: String,
     timestamp: String,
+    category: String,
 }
 
 #[derive(Serialize)]
@@ -133,22 +134,19 @@ fn analyze_change_trend_backend(text: &str) -> i32 {
     0
 }
 
-fn log(app: &AppHandle, level: &str, message: &str) {
+pub fn log(app: &AppHandle, level: &str, message: &str, category: &str) {
     let entry = LogEntry {
         level: level.to_string(),
         message: message.to_string(),
         timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+        category: category.to_string(),
     };
     
     // Emit to all windows
-    if let Err(e) = app.emit("log_message", &entry) {
-        println!("Failed to emit log: {}", e);
-    } else {
+    if let Err(_e) = app.emit("log_message", &entry) {
         // Also try specific main window if global fails or to be sure
         let _ = app.emit_to("main", "log_message", &entry);
     }
-    
-    println!("[{}] {}", level, message);
 }
 
 // ... get_or_fetch_patch same ...
@@ -158,15 +156,15 @@ async fn get_or_fetch_patch(version: &str, app: &AppHandle, state: &AppState, fo
             return Ok(patch);
         }
     }
-    log(app, "INFO", &format!("Fetching patch data for {} from web...", version));
+    log(app, "INFO", &format!("Fetching patch data for {} from web...", version), "PATCHES");
     match state.scraper.fetch_current_meta(version).await {
         Ok(data) => {
             let _ = state.db.save_patch(&data).await;
-            log(app, "SUCCESS", &format!("Data for {} fetched and saved.", version));
+            log(app, "SUCCESS", &format!("Data for {} fetched and saved.", version), "PATCHES");
             Ok(data)
         },
         Err(e) => {
-            log(app, "ERROR", &format!("Failed to fetch patch {}: {}", version, e));
+            log(app, "ERROR", &format!("Failed to fetch patch {}: {}", version, e), "PATCHES");
             Err(e.to_string())
         }
     }
@@ -356,7 +354,7 @@ async fn get_tier_list(
 
 #[tauri::command]
 async fn sync_patch_history(app: AppHandle, state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
-    log(&app, "INFO", "Starting full history sync...");
+    log(&app, "INFO", "Starting full history sync...", "PATCHES");
     
     let patches_list = {
         let state = state.lock().await;
@@ -366,7 +364,7 @@ async fn sync_patch_history(app: AppHandle, state: tauri::State<'_, Mutex<AppSta
         }
     };
 
-    log(&app, "INFO", &format!("Found {} patches to check.", patches_list.len()));
+    log(&app, "INFO", &format!("Found {} patches to check.", patches_list.len()), "PATCHES");
 
     for version in patches_list {
         let exists = {
@@ -375,7 +373,7 @@ async fn sync_patch_history(app: AppHandle, state: tauri::State<'_, Mutex<AppSta
         };
 
         if !exists {
-             log(&app, "INFO", &format!("Downloading missing patch: {} ...", version));
+             log(&app, "INFO", &format!("Downloading missing patch: {} ...", version), "PATCHES");
              let fetch_result = {
                  let state = state.lock().await;
                  state.scraper.fetch_current_meta(&version).await
@@ -385,20 +383,20 @@ async fn sync_patch_history(app: AppHandle, state: tauri::State<'_, Mutex<AppSta
                  Ok(data) => {
                      let state = state.lock().await;
                      if let Err(e) = state.db.save_patch(&data).await {
-                         log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
+                         log(&app, "ERROR", &format!("Failed to save {}: {}", version, e), "PATCHES");
                      } else {
-                         log(&app, "SUCCESS", &format!("Saved patch {}", version));
+                         log(&app, "SUCCESS", &format!("Saved patch {}", version), "PATCHES");
                      }
                  },
                  Err(e) => {
-                     log(&app, "ERROR", &format!("Failed to download {}: {}", version, e));
+                     log(&app, "ERROR", &format!("Failed to download {}: {}", version, e), "PATCHES");
                  }
              }
              tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     }
 
-    log(&app, "SUCCESS", "History sync completed.");
+    log(&app, "SUCCESS", "History sync completed.", "PATCHES");
     Ok(())
 }
 
@@ -412,18 +410,20 @@ async fn clear_database(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), 
 #[tauri::command]
 async fn get_real_stats(
     patch: String,
+    app: AppHandle,
     state: tauri::State<'_, Mutex<AppState>>
 ) -> Result<Vec<supabase::SupabaseChampionStatsRaw>, String> {
     let state = state.lock().await;
-    state.supabase.get_champion_stats(&patch).await.map_err(|e| e.to_string())
+    state.supabase.get_champion_stats(&patch, Some(&app)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_available_stats_patches(
+    app: AppHandle,
     state: tauri::State<'_, Mutex<AppState>>
 ) -> Result<Vec<String>, String> {
     let state = state.lock().await;
-    state.supabase.get_available_patches_stats().await.map_err(|e| e.to_string())
+    state.supabase.get_available_patches_stats(Some(&app)).await.map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -6,16 +6,18 @@
 set -e
 
 REPO="RaspizDIYs/patch-analyzer"
-TAG="v1.0.1-beta"
-VERSION="1.0.1-beta"
-RELEASE_NAME="Beta Release v1.0.1"
-RELEASE_NOTES="Beta канал обновлений
+TAG="v1.0.2-beta"
+VERSION="1.0.2-beta"
+RELEASE_NAME="Beta Release v1.0.2"
+RELEASE_NOTES="Beta Release v1.0.2
 
-Новые возможности:
-- Поддержка каналов обновлений (stable/beta)
-- Темная тема
-- Адаптивный дизайн
-- Улучшения настроек"
+Основные изменения:
+- Добавлена поддержка всех рангов (Iron, Bronze, Silver, Gold, Platinum, Emerald, Diamond, Master, Grandmaster, Challenger)
+- Улучшена производительность process-matches: поддержка 2 API ключей, до 200 запросов каждые 2 минуты
+- Обновлена архитектура: полная документация всех Edge Functions и SQL функций
+- Добавлена документация по структуре рангов и дивизионов
+- Исправлена агрегация статистики для всех рангов
+- Улучшена ротация API ключей"
 
 if [ -z "$GITHUB_TOKEN" ]; then
     echo "Ошибка: GITHUB_TOKEN не установлен"
@@ -79,4 +81,5 @@ for FILE in "${FILES[@]}"; do
 done
 
 echo "Релиз успешно создан: https://github.com/$REPO/releases/tag/$TAG"
+
 

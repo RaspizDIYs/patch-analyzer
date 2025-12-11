@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useId, Component, ErrorInfo, ReactNode } from "react";
+import { useState, useEffect, useRef, useId, useCallback, Component, ErrorInfo, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, ArrowLeft, Database as DbIcon, Settings, Sun, Moon, ExternalLink } from "lucide-react";
-import { cn } from "./lib/utils";
+import { cn, mapPatchVersion } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
 function cleanUrl(url?: string | null) {
@@ -108,7 +108,7 @@ interface ChampionListItem { name: string; name_en: string; icon_url: string; }
 interface ChampionMeta { nameRu: string; nameEn: string; icon: string; }
 interface RuneListItem { name: string; nameEn: string; icon_url: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
-interface LogEntry { level: string; message: string; timestamp: string; }
+interface LogEntry { level: string; message: string; timestamp: string; category: string; }
 interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; }
 interface SupabaseChampionStats {
     id: number;
@@ -138,16 +138,11 @@ function compareVersions(v1: string, v2: string) {
     return 0;
 }
 
-// Сортировка патчей от новых к старым (большие версии первыми)
-function sortPatchesNewestFirst(patches: string[]): string[] {
-    return [...patches].sort((a, b) => compareVersions(b, a));
-}
-
 import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 
-function IconSelect({ label, value, onChange, options, compact = false }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string; disabled?: boolean }[]; compact?: boolean }) {
+function IconSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string; icon?: string; disabled?: boolean }[] }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
@@ -182,11 +177,10 @@ function IconSelect({ label, value, onChange, options, compact = false }: { labe
         className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500 dark:focus:border-blue-400 text-slate-700 dark:text-slate-100"
         onClick={toggle}
         type="button"
-        title={current?.label || label}
       >
         <span className="text-slate-500 dark:text-slate-300">{label}</span>
         {current?.icon && <img src={current.icon} alt={current.label} className="w-4 h-4" />}
-        {(!compact || value === "all") && <span>{current?.label || "Все"}</span>}
+        <span>{current?.label || "Все"}</span>
       </button>
       {open && (
         <div className="absolute z-20 mt-1 w-full min-w-[140px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md shadow-sm">
@@ -195,10 +189,9 @@ function IconSelect({ label, value, onChange, options, compact = false }: { labe
               key={opt.value}
               className={cn("flex items-center gap-2 px-3 py-2 text-sm", opt.disabled ? "text-slate-300 dark:text-slate-600 cursor-not-allowed" : "hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer text-slate-700 dark:text-slate-100")}
               onClick={() => { if (opt.disabled) return; onChange(opt.value); setOpen(false); }}
-              title={opt.label}
             >
               {opt.icon && <img src={opt.icon} alt={opt.label} className="w-4 h-4" />}
-              {(!compact || opt.value === "all") && <span>{opt.label}</span>}
+              <span>{opt.label}</span>
             </div>
           ))}
         </div>
@@ -239,7 +232,7 @@ function App() {
     useEffect(() => {
         const initUpdater = async () => {
             try {
-                const update = await check();
+                const update = await check({ channel: updateChannel });
                 if (update?.available) {
                     const yes = await ask(`Доступна новая версия ${update.version}! Хотите обновиться сейчас?`, {
                         title: 'Обновление доступно',
@@ -605,17 +598,101 @@ function SettingsView({ theme, onThemeChange, channel, onChannelChange, appVersi
 
 function LogsView({ logs }: { logs: LogEntry[] }) {
   const navigate = useNavigate();
+  
+  const categoryColors: Record<string, string> = {
+    "PATCHES": "bg-blue-500/20 text-blue-300 border-blue-500/30",
+    "SUPABASE": "bg-purple-500/20 text-purple-300 border-purple-500/30",
+    "APP": "bg-green-500/20 text-green-300 border-green-500/30",
+    "DATABASE": "bg-orange-500/20 text-orange-300 border-orange-500/30",
+    "SCRAPER": "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+  };
+
+  const allCategories = Object.keys(categoryColors);
+  const availableCategories = Array.from(new Set(logs.map(log => log.category || "APP")));
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set(availableCategories));
+
+  useEffect(() => {
+    setSelectedCategories(new Set(availableCategories));
+  }, [availableCategories.length]);
+
+  const toggleCategory = (category: string) => {
+    setSelectedCategories(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(category)) {
+        newSet.delete(category);
+      } else {
+        newSet.add(category);
+      }
+      return newSet;
+    });
+  };
+
+  const filteredLogs = logs.filter(log => {
+    const category = log.category || "APP";
+    return selectedCategories.has(category);
+  });
+
+  const getCategoryColor = (category: string) => {
+    return categoryColors[category] || "bg-slate-500/20 text-slate-300 border-slate-500/30";
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
        <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Системные Логи</h2>
           <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded">Live Updates</span>
        </div>
+       
+       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm">
+         <div className="flex items-center justify-between mb-3">
+           <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">Фильтр по категориям:</div>
+           <div className="flex gap-2">
+             <button
+               onClick={() => setSelectedCategories(new Set(allCategories))}
+               className="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+             >
+               Выбрать все
+             </button>
+             <button
+               onClick={() => setSelectedCategories(new Set())}
+               className="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+             >
+               Сбросить
+             </button>
+           </div>
+         </div>
+         <div className="flex flex-wrap gap-3">
+           {allCategories.map(category => (
+             <label
+               key={category}
+               className={cn(
+                 "flex items-center gap-2 px-3 py-2 rounded-md border cursor-pointer transition-all",
+                 selectedCategories.has(category)
+                   ? getCategoryColor(category) + " border-opacity-50"
+                   : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 opacity-50"
+               )}
+             >
+               <input
+                 type="checkbox"
+                 checked={selectedCategories.has(category)}
+                 onChange={() => toggleCategory(category)}
+                 className="w-4 h-4 rounded border-slate-300 dark:border-slate-600"
+               />
+               <span className="text-xs font-medium">{category}</span>
+             </label>
+           ))}
+         </div>
+       </div>
+
        <div className="bg-slate-900 rounded-xl p-4 h-[600px] overflow-y-auto font-mono text-xs custom-scrollbar">
-          {logs.length === 0 ? (
-            <div className="text-slate-500 italic text-center mt-20">Нет записей...</div>
+          {filteredLogs.length === 0 ? (
+            <div className="text-slate-500 italic text-center mt-20">
+              {logs.length === 0 ? "Нет записей..." : "Нет записей для выбранных категорий"}
+            </div>
           ) : (
-            logs.map((log, i) => (
+            filteredLogs.map((log, i) => {
+              const category = log.category || "APP";
+              return (
                <div key={i} className="flex gap-3 mb-1.5 border-b border-slate-800/50 pb-1.5 last:border-0 hover:bg-white/5 p-1 rounded transition-colors">
                   <span className="text-slate-500 shrink-0 select-none">{log.timestamp}</span>
                   <span className={cn("shrink-0 font-bold w-16", 
@@ -623,9 +700,13 @@ function LogsView({ logs }: { logs: LogEntry[] }) {
                       log.level === "ERROR" ? "text-red-400" : 
                       log.level === "WARN" ? "text-yellow-400" : "text-green-400"
                   )}>{log.level}</span>
+                  <span className={cn("shrink-0 px-2 py-0.5 rounded text-[10px] font-bold border", getCategoryColor(category))}>
+                    {category}
+                  </span>
                   <span className="text-slate-300 break-all">{log.message}</span>
                </div>
-            ))
+              );
+            })
           )}
        </div>
        <div className="flex justify-end">
@@ -645,33 +726,11 @@ function TierListView() {
   const [data, setData] = useState<TierEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
-  const [patchWindow, setPatchWindow] = useState<number>(() => {
-    const saved = localStorage.getItem("patchWindow");
-    return saved ? parseInt(saved, 10) : 20;
-  });
+  const [patchWindow, setPatchWindow] = useState<number>(20);
   const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
   const [allRunes, setAllRunes] = useState<RuneListItem[]>([]);
   const [allItems, setAllItems] = useState<ItemListItem[]>([]);
-  const [sortColumn, setSortColumn] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const navigate = useNavigate();
-
-  // Синхронизация с localStorage и обновление при изменении из истории изменений
-  useEffect(() => {
-    const handlePatchWindowChange = (e: Event) => {
-      const customEvent = e as CustomEvent<number>;
-      if (customEvent.detail !== patchWindow) {
-        setPatchWindow(customEvent.detail);
-      }
-    };
-    window.addEventListener("patchWindowChanged", handlePatchWindowChange as EventListener);
-    return () => window.removeEventListener("patchWindowChanged", handlePatchWindowChange as EventListener);
-  }, [patchWindow]);
-
-  // Сохраняем в localStorage при изменении
-  useEffect(() => {
-    localStorage.setItem("patchWindow", patchWindow.toString());
-  }, [patchWindow]);
 
   useEffect(() => {
     setLoading(true);
@@ -749,45 +808,6 @@ function TierListView() {
     return entry.category === "ItemsRunes";
   });
 
-  const handleSort = (column: string) => {
-    if (sortColumn === column) {
-      setSortDirection(sortDirection === "desc" ? "asc" : "desc");
-    } else {
-      setSortColumn(column);
-      setSortDirection("desc");
-    }
-  };
-
-  const sortedData = [...filtered].sort((a, b) => {
-    if (!sortColumn) return 0;
-    
-    let aVal: number = 0;
-    let bVal: number = 0;
-    
-    switch (sortColumn) {
-      case "buffs":
-        aVal = a.buffs;
-        bVal = b.buffs;
-        break;
-      case "nerfs":
-        aVal = a.nerfs;
-        bVal = b.nerfs;
-        break;
-      case "adjusted":
-        aVal = a.adjusted;
-        bVal = b.adjusted;
-        break;
-      default:
-        return 0;
-    }
-    
-    if (sortDirection === "desc") {
-      return bVal - aVal;
-    } else {
-      return aVal - bVal;
-    }
-  });
-
   const resolveIconAndName = (entry: TierEntry) => {
     if (entry.category === "Champions") {
       const c = allChamps.find(ch =>
@@ -828,14 +848,15 @@ function TierListView() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Тир-лист</h2>
-          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
             <span>Патчей:</span>
-            <IconSelect
-              label=""
-              value={patchWindow.toString()}
-              onChange={(v) => setPatchWindow(Number(v))}
-              options={[1,3,5,10,20].map(n => ({ value: n.toString(), label: n.toString() }))}
-            />
+            <select
+              className="bg-white border border-slate-200 rounded-md text-sm px-2 py-1 outline-none focus:border-blue-500"
+              value={patchWindow}
+              onChange={e => setPatchWindow(Number(e.target.value))}
+            >
+              {[1,3,5,10,20].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
           </div>
         </div>
         <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
@@ -873,74 +894,46 @@ function TierListView() {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden">
           <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 px-4 py-2">
             <div className="col-span-6">Сущность</div>
-            <div 
-              className="col-span-2 text-center text-emerald-700 dark:text-emerald-400 cursor-pointer hover:text-emerald-800 dark:hover:text-emerald-300 select-none transition-colors"
-              onClick={() => handleSort("buffs")}
-            >
-              <div className="flex items-center justify-center gap-1">
-                ↑ Buff
-                {sortColumn === "buffs" && (
-                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                )}
-              </div>
-            </div>
-            <div 
-              className="col-span-2 text-center text-red-700 dark:text-red-400 cursor-pointer hover:text-red-800 dark:hover:text-red-300 select-none transition-colors"
-              onClick={() => handleSort("nerfs")}
-            >
-              <div className="flex items-center justify-center gap-1">
-                ↓ Nerf
-                {sortColumn === "nerfs" && (
-                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                )}
-              </div>
-            </div>
-            <div 
-              className="col-span-2 text-center text-slate-600 dark:text-slate-400 cursor-pointer hover:text-slate-800 dark:hover:text-slate-200 select-none transition-colors"
-              onClick={() => handleSort("adjusted")}
-            >
-              <div className="flex items-center justify-center gap-1">
-                ⇄ Изм.
-                {sortColumn === "adjusted" && (
-                  sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                )}
-              </div>
-            </div>
+            <div className="col-span-2 text-center text-emerald-700">↑ Buff</div>
+            <div className="col-span-2 text-center text-red-700">↓ Nerf</div>
+            <div className="col-span-2 text-center text-slate-600">⇄ Изм.</div>
           </div>
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {sortedData.map((entry, idx) => {
+          <div className="divide-y divide-slate-100">
+            {filtered.map((entry, idx) => {
               const { icon, name } = resolveIconAndName(entry);
               const score = entry.buffs - entry.nerfs;
               return (
                 <button
                   key={entry.name + entry.category + idx}
                   onClick={() => handleOpenHistory(entry)}
-                  className="w-full grid grid-cols-12 items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800 transition-colors"
+                  className="w-full flex items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800 transition-colors"
                 >
-                  <div className="col-span-6 flex items-center gap-3">
-                    <span className="w-6 text-[11px] text-slate-400 dark:text-slate-500 font-mono">#{idx + 1}</span>
+                  <div className="flex items-center gap-3 col-span-6 flex-1">
+                    <span className="w-6 text-[11px] text-slate-400 font-mono">#{idx + 1}</span>
                     {icon && (
                       <img
                         src={cleanUrl(icon)}
-                        className="w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 object-cover"
+                        className="w-8 h-8 rounded-full border border-slate-200 bg-slate-100 object-cover"
                       />
                     )}
                     {!icon && (
-                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 border border-slate-200 dark:border-slate-700">
                         {name.slice(0, 2)}
                       </div>
                     )}
                     <span className="font-semibold text-slate-800 dark:text-slate-100">{name}</span>
-                    <span className="ml-2 text-[11px] text-slate-400 dark:text-slate-500">
+                    <span className="ml-2 text-[11px] text-slate-400">
                       {entry.category === "Champions" ? "Чемпион" : "Руна/Предмет"}
                     </span>
-                    <span className="ml-auto text-[11px] font-mono text-slate-400 dark:text-slate-500">
+                    <span className="ml-auto text-[11px] font-mono text-slate-400">
                       score {score >= 0 ? `+${score}` : score}
                     </span>
                   </div>
-                  <div className="col-span-2 text-center text-xs text-emerald-700 dark:text-emerald-400 font-semibold">+{entry.buffs}</div>
-                  <div className="col-span-2 text-center text-xs text-red-700 dark:text-red-400 font-semibold">-{entry.nerfs}</div>
-                  <div className="col-span-2 text-center text-xs text-slate-600 dark:text-slate-400 font-semibold">{entry.adjusted}</div>
+                  <div className="grid grid-cols-3 gap-4 w-40 text-xs">
+                    <span className="text-center text-emerald-700 font-semibold">+{entry.buffs}</span>
+                    <span className="text-center text-red-700 font-semibold">-{entry.nerfs}</span>
+                    <span className="text-center text-slate-600 font-semibold">{entry.adjusted}</span>
+                  </div>
                 </button>
               );
             })}
@@ -972,18 +965,6 @@ function ChampionHistoryView() {
   const [aggregatedGroups, setAggregatedGroups] = useState<{ title: string | null, icon: string | null, changes: string[] }[]>([]);
   const [loading, setLoading] = useState(false);
   const [prefill, setPrefill] = useState<{ type: "champion" | "rune" | "item"; name: string } | null>(null);
-  
-  // Количество патчей для фильтрации (синхронизируется с тир-листом через localStorage)
-  const [patchWindow, setPatchWindow] = useState<number>(() => {
-    const saved = localStorage.getItem("patchWindow");
-    return saved ? parseInt(saved, 10) : 20;
-  });
-
-  // Сохраняем в localStorage при изменении и отправляем событие для синхронизации
-  useEffect(() => {
-    localStorage.setItem("patchWindow", patchWindow.toString());
-    window.dispatchEvent(new CustomEvent("patchWindowChanged", { detail: patchWindow }));
-  }, [patchWindow]);
 
   // Чемпионы из бэкенда (DDragon)
   useEffect(() => {
@@ -1185,13 +1166,6 @@ function ChampionHistoryView() {
   useEffect(() => {
       if (!history || history.length === 0) return;
 
-      // Фильтруем историю по количеству патчей (берем самые новые)
-      const uniquePatches = Array.from(new Set(history.map(h => h.patch_version)));
-      // Сортируем от новых к старым и берем первые N патчей (самые новые)
-      const sortedPatches = sortPatchesNewestFirst(uniquePatches);
-      const recentPatches = sortedPatches.slice(0, patchWindow);
-      const filteredHistory = history.filter(h => recentPatches.includes(h.patch_version));
-
       // 1. Calculate Net Changes for Summary
       // Strategy: Group by Ability/Stat Title. Then try to parse changes.
       // If we detect "Stat: X -> Y" and later "Stat: Y -> Z", we want "Stat: X -> Z".
@@ -1200,7 +1174,7 @@ function ChampionHistoryView() {
 
       // Process oldest to newest to build the chain
       // Sort by version ascending since dates might be identical
-      const chronologicalHistory = [...filteredHistory].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
+      const chronologicalHistory = [...history].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
 
       chronologicalHistory.forEach(h => {
           if (h.change.details) {
@@ -1286,30 +1260,12 @@ function ChampionHistoryView() {
       });
 
       setAggregatedGroups(finalGroups);
-  }, [history, patchWindow]);
-
-  // Фильтруем историю для отображения по количеству патчей (берем самые новые)
-  const uniquePatches = Array.from(new Set(history.map(h => h.patch_version)));
-  // Сортируем от новых к старым и берем первые N патчей (самые новые)
-  const sortedPatches = sortPatchesNewestFirst(uniquePatches);
-  const recentPatches = sortedPatches.slice(0, patchWindow);
-  const filteredHistoryForDisplay = history.filter(h => recentPatches.includes(h.patch_version));
+  }, [history]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">История изменений</h2>
-            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-              <span>Патчей:</span>
-              <IconSelect
-                label=""
-                value={patchWindow.toString()}
-                onChange={(v) => setPatchWindow(Number(v))}
-                options={[1,3,5,10,20].map(n => ({ value: n.toString(), label: n.toString() }))}
-              />
-            </div>
-          </div>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">История изменений</h2>
            <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-xs font-semibold">
              {[
                { key: "champion", label: "Чемпионы" },
@@ -1393,8 +1349,8 @@ function ChampionHistoryView() {
                          {entityType === "rune" && selectedRune && selectedRune.name}
                          {entityType === "item" && selectedItem && selectedItem.name}
                        </h3>
-                       <div className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider bg-white dark:bg-slate-800 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
-                         Общая сводка ({patchWindow} {patchWindow === 1 ? 'патч' : patchWindow < 5 ? 'патча' : 'патчей'})
+                       <div className="text-xs text-slate-500 font-bold uppercase tracking-wider bg-white dark:bg-slate-800 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
+                         Общая сводка (20 патчей)
                        </div>
                    </div>
               </div>
@@ -1453,8 +1409,8 @@ function ChampionHistoryView() {
              Данных нет. Нажмите "Скачать патчи" в верхнем меню или выберите другую сущность.
           </div>
        )}
-       <div className="relative border-l-2 border-slate-200 dark:border-slate-700 ml-6 space-y-8 py-2 pb-10">
-          {[...filteredHistoryForDisplay].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
+       <div className="relative border-l-2 border-slate-200 ml-6 space-y-8 py-2 pb-10">
+          {[...history].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
              <div key={idx} className="relative pl-8 group">
                 <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-slate-200 border-2 border-white group-hover:bg-blue-500 transition-colors ring-4 ring-white" />
                 <div className="flex items-center gap-3 mb-3">
@@ -1894,16 +1850,17 @@ function RealStatsView() {
     const [stats, setStats] = useState<SupabaseChampionStats[]>([]);
     const [patches, setPatches] = useState<string[]>([]);
     const [selectedPatch, setSelectedPatch] = useState<string>("");
-    const [selectedRole, setSelectedRole] = useState<string>("fill");
+    const [selectedRole, setSelectedRole] = useState<string>("all");
     const [selectedRegion, setSelectedRegion] = useState<string>("all");
-    const [selectedTier, setSelectedTier] = useState<string>("platinum");
+    const [selectedTier, setSelectedTier] = useState<string>("all");
     const [loading, setLoading] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+    const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
     const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
     const [champDict, setChampDict] = useState<Record<string, ChampionMeta>>({});
     const [ddragonVersion, setDdragonVersion] = useState<string>("15.24.1");
+    const [prevStatsMap, setPrevStatsMap] = useState<Record<string, SupabaseChampionStats>>({});
     const [error, setError] = useState<string | null>(null);
-    const [sortColumn, setSortColumn] = useState<string | null>(null);
-    const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
     useEffect(() => {
         invoke<string[]>("get_available_stats_patches").then(list => {
@@ -1966,31 +1923,63 @@ function RealStatsView() {
         })();
     }, []);
 
-    useEffect(() => {
-        if (!selectedPatch) return;
-        setLoading(true);
+    const fetchStats = useCallback(async (patch: string, silent = false) => {
+        if (!patch) return;
+        if (!silent) setLoading(true);
         setError(null);
 
-        console.log("Fetching stats for patch:", selectedPatch);
-        invoke<SupabaseChampionStats[]>("get_real_stats", { patch: selectedPatch })
-        .then((curr) => {
-            console.log("Received stats:", curr);
+        const idx = patches.findIndex(p => p === patch);
+        const prevPatch = idx >= 0 && idx + 1 < patches.length ? patches[idx + 1] : null;
+
+        const makeMap = (arr: SupabaseChampionStats[]) => {
+            const m: Record<string, SupabaseChampionStats> = {};
+            arr.forEach(item => {
+                const key = `${item.champion_id}|${item.role || ""}`;
+                m[key] = item;
+            });
+            return m;
+        };
+
+        try {
+            const [curr, prev] = await Promise.all([
+                invoke<SupabaseChampionStats[]>("get_real_stats", { patch }),
+                prevPatch ? invoke<SupabaseChampionStats[]>("get_real_stats", { patch: prevPatch }).catch(() => []) : Promise.resolve([])
+            ]);
             setStats(curr);
-        })
-        .catch(e => {
+            setPrevStatsMap(makeMap(prev));
+            setLastUpdate(new Date());
+            if (!silent) {
+                toast.success(`Статистика обновлена (${curr.length} записей)`);
+            }
+        } catch (e) {
             const errorMsg = String(e);
             console.error("Error fetching stats:", errorMsg);
             const isSilentError = errorMsg === "1" || errorMsg === "101" || 
                                   errorMsg.trim() === "1" || errorMsg.trim() === "101" ||
                                   errorMsg.includes("Network error") || errorMsg.includes("404") || 
                                   errorMsg.includes("empty");
-            if (!isSilentError) {
+            if (!isSilentError && !silent) {
                 toast.error("Ошибка получения статистики: " + errorMsg);
             }
             setError("Не удалось получить статистику для выбранного патча.");
-        })
-        .finally(() => setLoading(false));
-    }, [selectedPatch]);
+        } finally {
+            if (!silent) setLoading(false);
+            setRefreshing(false);
+        }
+    }, [patches]);
+
+    useEffect(() => {
+        if (!selectedPatch) return;
+        fetchStats(selectedPatch);
+    }, [selectedPatch, fetchStats]);
+
+    useEffect(() => {
+        if (!selectedPatch) return;
+        const interval = setInterval(() => {
+            fetchStats(selectedPatch, true);
+        }, 5 * 60 * 1000);
+        return () => clearInterval(interval);
+    }, [selectedPatch, fetchStats]);
 
     const getChampIcon = (name: string) => {
         if (champDict[name]?.icon) return champDict[name].icon;
@@ -2002,6 +1991,10 @@ function RealStatsView() {
     const getChampNameEn = (id: string) => champDict[id]?.nameEn || id;
 
     const rankIcons: Record<string, string> = {
+        iron: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-iron.png",
+        bronze: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-bronze.png",
+        silver: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-silver.png",
+        gold: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-gold.png",
         platinum: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-platinum.png",
         emerald: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-emerald.png",
         diamond: "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-diamond.png",
@@ -2047,33 +2040,6 @@ function RealStatsView() {
     const normalizeTier = (t?: string | null) => (t || "").trim().toLowerCase();
     const tiersRawLower = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
 
-    useEffect(() => {
-        if (!stats.length) return;
-
-        const rolesList = Array.from(new Set(stats.map(s => normalizeRole(s.role) || "").filter(Boolean)));
-        if (rolesList.length === 1 && selectedRole !== rolesList[0]) {
-            setSelectedRole(rolesList[0]);
-        } else if (selectedRole === "all") {
-            if (rolesList.includes("fill")) setSelectedRole("fill");
-            else if (rolesList.length) setSelectedRole(rolesList[0]);
-        }
-
-        const regionList = Array.from(new Set(stats.map(s => (s.region || "").trim()).filter(Boolean)));
-        if (regionList.length === 1 && selectedRegion !== regionList[0]) {
-            setSelectedRegion(regionList[0]);
-        }
-
-        const tierList = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
-        const preferOrder = ["platinum", "emerald", "diamond", "master", "grandmaster", "challenger"];
-        const preferred = preferOrder.find(t => tierList.includes(t)) || tierList[0];
-
-        if (tierList.length === 1 && selectedTier !== tierList[0]) {
-            setSelectedTier(tierList[0]);
-        } else if (selectedTier === "all" || !tierList.includes(normalizeTier(selectedTier))) {
-            if (preferred) setSelectedTier(preferred);
-        }
-    }, [stats]);
-
     const filteredStats = stats.filter(row => {
         const matchRole = selectedRole === "all" || normalizeRole(row.role) === selectedRole;
         const matchRegion = selectedRegion === "all" || (row.region || "") === selectedRegion;
@@ -2081,50 +2047,20 @@ function RealStatsView() {
         return matchRole && matchRegion && matchTier;
     });
 
-    const handleSort = (column: string) => {
-        if (sortColumn === column) {
-            setSortDirection(sortDirection === "desc" ? "asc" : "desc");
-        } else {
-            setSortColumn(column);
-            setSortDirection("desc");
-        }
+    const hasBanFiltered = filteredStats.some(s => s.ban_rate !== null && s.ban_rate !== undefined);
+
+    const formatLastUpdate = () => {
+        if (!lastUpdate) return null;
+        const now = new Date();
+        const diff = Math.floor((now.getTime() - lastUpdate.getTime()) / 1000);
+        if (diff < 60) return `обновлено ${diff} сек назад`;
+        if (diff < 3600) return `обновлено ${Math.floor(diff / 60)} мин назад`;
+        return `обновлено ${lastUpdate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
     };
 
-    const sortedStats = [...filteredStats].sort((a, b) => {
-        if (!sortColumn) return 0;
-        
-        let aVal: number = 0;
-        let bVal: number = 0;
-        
-        switch (sortColumn) {
-            case "win_rate":
-                aVal = a.win_rate || 0;
-                bVal = b.win_rate || 0;
-                break;
-            case "pick_rate":
-                aVal = a.pick_rate || 0;
-                bVal = b.pick_rate || 0;
-                break;
-            case "ban_rate":
-                aVal = a.ban_rate || 0;
-                bVal = b.ban_rate || 0;
-                break;
-            case "total_matches":
-                aVal = a.total_matches || 0;
-                bVal = b.total_matches || 0;
-                break;
-            default:
-                return 0;
-        }
-        
-        if (sortDirection === "desc") {
-            return bVal - aVal;
-        } else {
-            return aVal - bVal;
-        }
-    });
-
-    const hasBanFiltered = filteredStats.some(s => s.ban_rate !== null && s.ban_rate !== undefined);
+    const totalMatches = stats.reduce((sum, s) => sum + (s.total_matches || 0), 0);
+    const uniqueTiers = Array.from(new Set(stats.map(s => normalizeTier(s.tier)).filter(Boolean)));
+    const uniqueRegions = Array.from(new Set(stats.map(s => (s.region || "").trim()).filter(Boolean)));
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500">
@@ -2134,52 +2070,86 @@ function RealStatsView() {
                       <DbIcon className="w-6 h-6 text-blue-500" />
                       Live Статистика
                   </h2>
+                  <div className="flex flex-col gap-0.5">
+                    {lastUpdate && (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                          {formatLastUpdate()}
+                      </span>
+                    )}
+                    {stats.length > 0 && (
+                      <div className="flex gap-4 text-xs text-slate-500 dark:text-slate-400">
+                        <span>Записей: {stats.length}</span>
+                        <span>Всего матчей: {totalMatches.toLocaleString('ru-RU')}</span>
+                        <span>Рангов: {uniqueTiers.length} ({uniqueTiers.join(", ")})</span>
+                        <span>Регионов: {uniqueRegions.length}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                    <IconSelect
-                        label="Патч"
-                        value={selectedPatch}
-                        onChange={setSelectedPatch}
-                        options={[
-                            { value: "all", label: "Все", disabled: true },
-                            ...patches.map(p => ({ value: p, label: p }))
-                        ]}
-                    />
-                    <IconSelect
-                        label="Роль"
-                        value={selectedRole}
-                        onChange={setSelectedRole}
-                        compact
-                        options={[
-                            { value: "all", label: "Все" },
-                            ...roles.map(r => ({ value: r, label: r || "—", icon: getRoleIcon(r) || undefined }))
-                        ]}
-                    />
-                    <IconSelect
-                        label="Сервер"
-                        value={selectedRegion}
-                        onChange={setSelectedRegion}
-                        options={[
-                            { value: "all", label: "Все" },
-                            ...regions.map(r => ({ value: r, label: r || "—" }))
-                        ]}
-                    />
-                    <IconSelect
-                        label="Ранг"
-                        value={selectedTier}
-                        onChange={setSelectedTier}
-                        compact
-                        options={[
-                            { value: "all", label: "Все" },
-                            { value: "challenger", label: "Challenger", icon: getRankIcon("challenger") || undefined, disabled: !tiersRawLower.includes("challenger") },
-                            { value: "grandmaster", label: "Grandmaster", icon: getRankIcon("grandmaster") || undefined, disabled: !tiersRawLower.includes("grandmaster") },
-                            { value: "master", label: "Master", icon: getRankIcon("master") || undefined, disabled: !tiersRawLower.includes("master") },
-                            { value: "diamond", label: "Diamond", icon: getRankIcon("diamond") || undefined, disabled: !tiersRawLower.includes("diamond") },
-                            { value: "emerald", label: "Emerald", icon: getRankIcon("emerald") || undefined, disabled: !tiersRawLower.includes("emerald") },
-                            { value: "platinum", label: "Platinum", icon: getRankIcon("platinum") || undefined, disabled: !tiersRawLower.includes("platinum") },
-                        ]}
-                    />
-                </div>
+                <button
+                    onClick={() => {
+                        if (!selectedPatch) return;
+                        setRefreshing(true);
+                        fetchStats(selectedPatch);
+                    }}
+                    disabled={refreshing || loading || !selectedPatch}
+                    className={cn(
+                        "inline-flex items-center gap-2 px-4 py-2 rounded-md border transition-colors",
+                        refreshing || loading || !selectedPatch
+                            ? "border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed"
+                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-100 hover:bg-blue-50 dark:hover:bg-slate-800"
+                    )}
+                >
+                    <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+                    Обновить
+                </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+                <IconSelect
+                    label="Патч"
+                    value={selectedPatch}
+                    onChange={setSelectedPatch}
+                    options={[
+                        { value: "all", label: "Все", disabled: true },
+                        ...patches.map(p => ({ value: p, label: p }))
+                    ]}
+                />
+                <IconSelect
+                    label="Роль"
+                    value={selectedRole}
+                    onChange={setSelectedRole}
+                    options={[
+                        { value: "all", label: "Все" },
+                        ...roles.map(r => ({ value: r, label: r || "—", icon: getRoleIcon(r) || undefined }))
+                    ]}
+                />
+                <IconSelect
+                    label="Сервер"
+                    value={selectedRegion}
+                    onChange={setSelectedRegion}
+                    options={[
+                        { value: "all", label: "Все" },
+                        ...regions.map(r => ({ value: r, label: r || "—" }))
+                    ]}
+                />
+                <IconSelect
+                    label="Ранг"
+                    value={selectedTier}
+                    onChange={setSelectedTier}
+                    options={[
+                        { value: "all", label: "Все" },
+                        { value: "challenger", label: "Challenger", icon: getRankIcon("challenger") || undefined, disabled: !tiersRawLower.includes("challenger") },
+                        { value: "grandmaster", label: "Grandmaster", icon: getRankIcon("grandmaster") || undefined, disabled: !tiersRawLower.includes("grandmaster") },
+                        { value: "master", label: "Master", icon: getRankIcon("master") || undefined, disabled: !tiersRawLower.includes("master") },
+                        { value: "diamond", label: "Diamond", icon: getRankIcon("diamond") || undefined, disabled: !tiersRawLower.includes("diamond") },
+                        { value: "emerald", label: "Emerald", icon: getRankIcon("emerald") || undefined, disabled: !tiersRawLower.includes("emerald") },
+                        { value: "platinum", label: "Platinum", icon: getRankIcon("platinum") || undefined, disabled: !tiersRawLower.includes("platinum") },
+                        { value: "gold", label: "Gold", icon: getRankIcon("gold") || undefined, disabled: !tiersRawLower.includes("gold") },
+                        { value: "silver", label: "Silver", icon: getRankIcon("silver") || undefined, disabled: !tiersRawLower.includes("silver") },
+                        { value: "bronze", label: "Bronze", icon: getRankIcon("bronze") || undefined, disabled: !tiersRawLower.includes("bronze") },
+                        { value: "iron", label: "Iron", icon: getRankIcon("iron") || undefined, disabled: !tiersRawLower.includes("iron") },
+                    ]}
+                />
             </div>
 
             {loading ? (
@@ -2198,56 +2168,14 @@ function RealStatsView() {
                             <tr>
                                 <th className="px-4 py-3">Чемпион</th>
                                 <th className="px-4 py-3">Роль</th>
-                                <th 
-                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
-                                    onClick={() => handleSort("win_rate")}
-                                >
-                                    <div className="flex items-center justify-end gap-2">
-                                        Win Rate
-                                        {sortColumn === "win_rate" && (
-                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                                        )}
-                                    </div>
-                                </th>
-                                <th 
-                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
-                                    onClick={() => handleSort("pick_rate")}
-                                >
-                                    <div className="flex items-center justify-end gap-2">
-                                        Pick Rate
-                                        {sortColumn === "pick_rate" && (
-                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                                        )}
-                                    </div>
-                                </th>
-                                {hasBanFiltered && (
-                                    <th 
-                                        className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
-                                        onClick={() => handleSort("ban_rate")}
-                                    >
-                                        <div className="flex items-center justify-end gap-2">
-                                            Ban Rate
-                                            {sortColumn === "ban_rate" && (
-                                                sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                                            )}
-                                        </div>
-                                    </th>
-                                )}
-                                <th 
-                                    className="px-4 py-3 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-100 select-none transition-colors"
-                                    onClick={() => handleSort("total_matches")}
-                                >
-                                    <div className="flex items-center justify-end gap-2">
-                                        Матчей
-                                        {sortColumn === "total_matches" && (
-                                            sortDirection === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
-                                        )}
-                                    </div>
-                                </th>
+                                <th className="px-4 py-3 text-right">Win Rate</th>
+                                <th className="px-4 py-3 text-right">Pick Rate</th>
+                                {hasBanFiltered && <th className="px-4 py-3 text-right">Ban Rate</th>}
+                                <th className="px-4 py-3 text-right">Матчей</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {sortedStats.map((row, idx) => (
+                            {filteredStats.map((row, idx) => (
                                 <tr key={idx} className="hover:bg-blue-50/50 dark:hover:bg-slate-800 transition-colors">
                                     <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100 flex items-center gap-3">
                                         <ChampionIcon url={getChampIcon(row.champion_id)} name={getChampName(row.champion_id)} size="sm" />
