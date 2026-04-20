@@ -1,116 +1,194 @@
-import { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
-import { Toaster, toast } from "sonner";
-import { BookOpen, LineChart, History, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, X, Circle, Settings } from "lucide-react";
-import { cn } from "./lib/utils";
+import {
+  useState,
+  useEffect,
+  useMemo,
+  type ComponentProps,
+  type SyntheticEvent,
+} from "react";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Routes, Route, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import {
+  ArrowLeft,
+  BookOpen,
+  Check,
+  ChevronDown,
+  Circle,
+  DownloadCloud,
+  History,
+  LineChart,
+  List,
+  RefreshCw,
+  Search,
+  Settings,
+  Wrench,
+  Youtube,
+  ArrowUp,
+  ArrowDown,
+  ArrowRightLeft,
+  X,
+  Sparkles,
+} from "lucide-react";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { SettingsPage } from "@/pages/settings-page";
+import { CommunityPage } from "@/pages/community-page";
+import { AugmentsPage } from "@/pages/augments-page";
+import { YoutubeChannelPanel } from "@/components/youtube-channel-panel";
+import {
+  YOUTUBE_CHANNEL_SKINSPOTLIGHTS,
+  YOUTUBE_URL_SKINSPOTLIGHTS,
+} from "@/lib/youtube-channels";
+import { SkinSpotlightEmbed } from "@/components/skin-spotlight-embed";
+import { buildSkinSpotlightYoutubeSearch } from "@/lib/youtube-match";
+import { useYoutubeFeed } from "@/hooks/use-youtube-feed";
+import { StartupRouteSync } from "@/components/startup-route";
+import { Toaster } from "@/components/ui/sonner";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Badge as UiBadge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  applyDomFromPreferences,
+  loadAppPreferences,
+  saveAppPreferences,
+} from "@/lib/app-preferences";
+import { formatAppDate } from "@/lib/format-date";
+import { cn } from "@/lib/utils";
+import {
+  cleanUrl,
+  highlightSpecialTags,
+  compareVersions,
+  patchNoteCategoryLabel,
+  WIKI_AUGMENT_DETAIL_TITLE,
+  PATCH_NOTE_CATEGORY_TAB_ORDER,
+} from "@/lib/patch-utils";
+import { loadItemsRunesHybrid } from "@/lib/catalog-from-tauri";
+import {
+  pushWikiHistory,
+  shortWikiUrlForList,
+  wikiEmbedClose,
+  wikiEmbedGoBack,
+  wikiEmbedNavigate,
+  wikiEmbedOpen,
+  wikiEmbedResize,
+} from "@/lib/wiki-embed";
+import type {
+  PatchData,
+  PatchNoteEntry,
+  ChampionHistoryEntry,
+  ChampionListItem,
+  RuneListItem,
+  ItemListItem,
+  TierEntry,
+  ChangeTrend,
+  ThemeOption,
+} from "@/types/patch";
 
-// Helper to clean image URLs on frontend (for existing data)
-function cleanUrl(url?: string | null) {
-  if (!url) return undefined;
-  if (url.includes("akamaihd.net") && url.includes("?f=")) {
+const LOL_WIKI_ENTRIES = [
+  { url: "https://wiki.leagueoflegends.com/en-us/", labelKey: "lolWiki.main" },
+  { url: "https://wiki.leagueoflegends.com/en-us/Champion", labelKey: "lolWiki.champions" },
+  { url: "https://wiki.leagueoflegends.com/en-us/Rune", labelKey: "lolWiki.runes" },
+  { url: "https://wiki.leagueoflegends.com/en-us/Summoner_spell", labelKey: "lolWiki.summoners" },
+  { url: "https://wiki.leagueoflegends.com/en-us/Item", labelKey: "lolWiki.items" },
+  { url: "https://wiki.leagueoflegends.com/en-us/Champion_skin", labelKey: "lolWiki.skins" },
+] as const;
+
+async function openExternalUrl(url: string) {
+  if (isTauri()) {
     try {
-        return url.split("?f=")[1];
-    } catch (e) { return url; }
-  }
-  return url;
-}
-
-function highlightSpecialTags(text: string): string {
-  // НОВОЕ / Новое / NEW (без word boundary, на всякий случай)
-  text = text.replace(
-    /(НОВОЕ|Новое|NEW)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold text-[11px] align-middle">$1</span>',
-  );
-  // УДАЛЕНО / Удалено / REMOVED
-  text = text.replace(
-    /(УДАЛЕНО|Удалено|REMOVED)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold text-[11px] align-middle">$1</span>',
-  );
-  return text;
-}
-
-class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, error: string }> {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false, error: "" };
-  }
-  static getDerivedStateFromError(error: Error) { return { hasError: true, error: error.message }; }
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) { console.error("Uncaught error:", error, errorInfo); }
-  render() {
-    if (this.state.hasError) {
-      return <div className="p-10 text-center text-red-500"><h1>Error</h1><code>{this.state.error}</code><button onClick={() => window.location.reload()}>Reload</button></div>;
+      await openUrl(url);
+      return;
+    } catch {
+      /* fall through */
     }
-    return this.props.children;
   }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
-
-interface PatchData { version: string; patch_notes: PatchNoteEntry[]; }
-interface ChangeBlock { title: string | null; icon_url: string | null; changes: string[]; }
-interface PatchNoteEntry { id: string; title: string; image_url?: string; category: string; change_type: string; summary: string; details: ChangeBlock[]; }
-interface ChampionHistoryEntry { patch_version: string; date: string; change: PatchNoteEntry; }
-interface ChampionListItem { name: string; name_en: string; icon_url: string; key: string; id: string; }
-interface RuneListItem { id: string; name: string; nameEn: string; icon_url: string; key?: string; style?: string; }
-interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
-interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; icon_url?: string | null; }
-
-function compareVersions(v1: string, v2: string) {
-    const parse = (v: string) => v.split('.').map(n => parseInt(n, 10)).filter(n => !isNaN(n));
-    const p1 = parse(v1);
-    const p2 = parse(v2);
-    for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
-        const n1 = p1[i] || 0;
-        const n2 = p2[i] || 0;
-        if (n1 !== n2) return n1 - n2;
-    }
-    return 0;
-}
-
-type ThemeOption = "light" | "dark" | "system";
 
 function App() {
+  const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
+  const patchNotesLocale = i18n.language?.startsWith("en") ? "en" : "ru";
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [version, setVersion] = useState("15.23"); 
+  const [version, setVersion] = useState("");
   const [patchesList, setPatchesList] = useState<string[]>([]);
   const [patchData, setPatchData] = useState<PatchData | null>(null);
-  const [patchesStatus, setPatchesStatus] = useState<Record<string, boolean>>({});
   const [newPatches, setNewPatches] = useState<Set<string>>(new Set());
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [theme, setTheme] = useState<ThemeOption>("system");
-  const [effectiveTheme, setEffectiveTheme] = useState<"light" | "dark">("light");
-  const location = useLocation();
+  const [theme, setTheme] = useState<ThemeOption>(() => loadAppPreferences().theme);
+  const [wikiOpen, setWikiOpen] = useState(false);
+  const [wikiHistory, setWikiHistory] = useState<string[]>([]);
 
-  // Инициализация и применение темы
   useEffect(() => {
-    const stored = (localStorage.getItem("theme") as ThemeOption | null) || "system";
-    setTheme(stored);
-    
-    // Применяем тему сразу синхронно
+    applyDomFromPreferences(loadAppPreferences());
+    document.documentElement.lang = i18n.language?.startsWith("en") ? "en" : "ru";
+    const onPrefs = () => applyDomFromPreferences(loadAppPreferences());
+    window.addEventListener("app-prefs-changed", onPrefs);
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    mq.addEventListener("change", onPrefs);
+    return () => {
+      window.removeEventListener("app-prefs-changed", onPrefs);
+      mq.removeEventListener("change", onPrefs);
+    };
+  }, [i18n.language]);
+
+  useEffect(() => {
+    const p = loadAppPreferences();
+    setTheme(p.theme);
     let eff: "light" | "dark";
-    if (stored === "system") {
+    if (p.theme === "system") {
       eff = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     } else {
-      eff = stored;
+      eff = p.theme;
     }
-    
     const root = document.documentElement;
-    const body = document.body;
-
-    if (eff === "dark") {
-      root.classList.add("dark");
-      body.classList.remove("theme-light");
-      body.classList.add("theme-dark");
-    } else {
-      root.classList.remove("dark");
-      body.classList.remove("theme-dark");
-      body.classList.add("theme-light");
-    }
-    
-    setEffectiveTheme(eff);
+    if (eff === "dark") root.classList.add("dark");
+    else root.classList.remove("dark");
   }, []);
 
-  // Применение темы при изменении
   useEffect(() => {
     let eff: "light" | "dark";
     if (theme === "system") {
@@ -118,483 +196,573 @@ function App() {
     } else {
       eff = theme;
     }
-    setEffectiveTheme(eff);
+    saveAppPreferences({ theme });
     localStorage.setItem("theme", theme);
-
     const root = document.documentElement;
-    const body = document.body;
-
-    if (eff === "dark") {
-      root.classList.add("dark");
-      body.classList.remove("theme-light");
-      body.classList.add("theme-dark");
-    } else {
-      root.classList.remove("dark");
-      body.classList.remove("theme-dark");
-      body.classList.add("theme-light");
-    }
+    if (eff === "dark") root.classList.add("dark");
+    else root.classList.remove("dark");
   }, [theme]);
 
   useEffect(() => {
-    invoke<string[]>("get_available_patches").then(list => {
-        setPatchesList(list);
-        if (list.length > 0) setVersion(list[0]);
-        // Проверяем наличие патчей в БД
-        invoke<Record<string, boolean>>("check_patches_exist", { versions: list }).then(status => {
-            setPatchesStatus(status);
-        }).catch(console.error);
-        
-        // Проверяем новые патчи - берем первый патч из списка (самый новый)
-        // и проверяем, загружен ли он в БД
-        if (list.length > 0) {
-            const latestPatch = list[0];
-            const existsInDb = patchesStatus[latestPatch];
-            
-            // Если патч есть в списке, но не загружен в БД - это новый патч
-            if (!existsInDb) {
-                invoke<boolean>("check_patch_notes_exists", { version: latestPatch }).then(exists => {
-                    if (exists) {
-                        setNewPatches(new Set([latestPatch]));
-                    }
-                }).catch(console.error);
-            }
+    if (!wikiOpen || !isTauri()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ url: string }>("wiki-embed:navigated", (ev) => {
+      setWikiHistory((prev) => pushWikiHistory(prev, ev.payload.url));
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    const onResize = () => {
+      void wikiEmbedResize();
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      window.removeEventListener("resize", onResize);
+    };
+  }, [wikiOpen]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      unlisten = await getCurrentWindow().onCloseRequested(async (e) => {
+        e.preventDefault();
+        const prefs = loadAppPreferences();
+        if (prefs.closeToTray) {
+          await getCurrentWindow().setSkipTaskbar(true);
+          await getCurrentWindow().hide();
+          return;
         }
-    }).catch(console.error);
+        try {
+          await invoke("exit_app");
+        } catch {
+          try {
+            await getCurrentWindow().close();
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+    })();
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
-  useEffect(() => { if (version) loadData(version, false); }, [version]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const w = getCurrentWindow();
+      unlisten = await w.onResized(async () => {
+        if (!loadAppPreferences().minimizeToTray) return;
+        try {
+          if (await w.isMinimized()) {
+            await w.setSkipTaskbar(true);
+            await w.hide();
+          }
+        } catch {
+          /* ignore */
+        }
+      });
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void invoke("update_tray_menu_labels", {
+      show: i18n.t("tray.show"),
+      quit: i18n.t("tray.quit"),
+    }).catch(() => { });
+  }, [i18n.language]);
+
+  async function refreshPatchesStatus(list: string[]) {
+    if (list.length === 0) return {};
+    return await invoke<Record<string, boolean>>("check_patches_exist", { versions: list });
+  }
+
+  useEffect(() => {
+    invoke<string[]>("get_available_patches")
+      .then((list) => {
+        setPatchesList(list);
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (patchesList.length === 0) return;
+    const mode = loadAppPreferences().patchDefaultMode;
+    setVersion((prev) => {
+      if (mode === "alwaysLatest") return patchesList[0];
+      if (patchesList.includes(prev)) return prev;
+      const saved = loadAppPreferences().lastPatchVersion;
+      if (saved && patchesList.includes(saved)) return saved;
+      return patchesList[0];
+    });
+    void (async () => {
+      try {
+        const status = await refreshPatchesStatus(patchesList);
+        const latestPatch = patchesList[0];
+        if (!status[latestPatch]) {
+          const exists = await invoke<boolean>("check_patch_notes_exists", {
+            version: latestPatch,
+            patchNotesLocale,
+          });
+          if (exists) setNewPatches(new Set([latestPatch]));
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, [patchesList, patchNotesLocale]);
+
+  useEffect(() => {
+    if (version) loadData(version, false);
+  }, [version, patchNotesLocale]);
 
   async function loadData(ver: string, force: boolean) {
     setLoading(true);
     try {
-        const patchResult = await invoke<PatchData>("get_patch_by_version", { version: ver });
-        setPatchData(patchResult);
-        if (force) {
-            toast.success(`Патч ${ver} обновлен`);
-            // Обновляем статус патча после загрузки
-            setPatchesStatus(prev => ({ ...prev, [ver]: true }));
-            // Убираем из списка новых, если был там
-            setNewPatches(prev => {
-                const updated = new Set(prev);
-                updated.delete(ver);
-                return updated;
-            });
-        }
+      const patchResult = await invoke<PatchData>("get_patch_by_version", {
+        version: ver,
+        patchNotesLocale,
+      });
+      setPatchData(patchResult);
+      const listForStatus =
+        patchesList.length > 0
+          ? patchesList
+          : await invoke<string[]>("get_available_patches").catch(() => []);
+      if (listForStatus.length > 0) {
+        await refreshPatchesStatus(listForStatus);
+      }
+      if (force) {
+        toast.success(t("toasts.patchRefreshed", { ver }));
+        setNewPatches((prev) => {
+          const updated = new Set(prev);
+          updated.delete(ver);
+          return updated;
+        });
+      }
     } catch (error) {
-        console.error(error);
-        toast.error("Ошибка загрузки: " + String(error));
+      console.error(error);
+      toast.error(t("toasts.loadError", { msg: String(error) }));
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
   }
 
   async function handleSyncAll() {
-      setSyncing(true);
-      toast.info("Загрузка всех патчей…");
+    setSyncing(true);
+    toast.info(t("toasts.syncingAll"));
+    try {
+      await invoke("sync_patch_history", { patchNotesLocale });
+      toast.success(t("toasts.syncDone"));
+      const list = await invoke<string[]>("get_available_patches");
+      setPatchesList(list);
+      const status = await refreshPatchesStatus(list);
+      setNewPatches((prev) => {
+        const updated = new Set(prev);
+        Object.keys(status).forEach((v) => {
+          if (status[v]) updated.delete(v);
+        });
+        return updated;
+      });
+      await loadData(version, false);
+    } catch (e) {
+      toast.error(t("toasts.syncError", { msg: String(e) }));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function setVersionPersist(next: string) {
+    setVersion(next);
+    saveAppPreferences({ lastPatchVersion: next });
+  }
+
+  async function openWikiUrl(url: string) {
+    if (!isTauri()) {
+      await openExternalUrl(url);
+      return;
+    }
+    setWikiHistory((prev) => pushWikiHistory(prev, url));
+    setWikiOpen(true);
+    try {
+      await wikiEmbedOpen(url);
+    } catch (e) {
+      toast.error(t("toasts.wikiEmbedError", { msg: String(e) }));
+      setWikiOpen(false);
+      setWikiHistory([]);
+    }
+  }
+
+  async function closeWikiToApp() {
+    if (isTauri()) {
       try {
-          await invoke("sync_patch_history");
-          toast.success("Все патчи загружены!");
-          loadData(version, false);
-          // Обновляем статус патчей
-          if (patchesList.length > 0) {
-              invoke<Record<string, boolean>>("check_patches_exist", { versions: patchesList }).then(status => {
-                  setPatchesStatus(status);
-                  // Если новый патч был загружен, убираем его из списка новых
-                  setNewPatches(prev => {
-                      const updated = new Set(prev);
-                      Object.keys(status).forEach(v => {
-                          if (status[v]) updated.delete(v);
-                      });
-                      return updated;
-                  });
-              }).catch(console.error);
-          }
-      } catch (e) {
-          toast.error("Ошибка синхронизации: " + String(e));
-      } finally {
-          setSyncing(false);
+        await wikiEmbedClose();
+      } catch {
+        /* ignore */
       }
+    }
+    setWikiOpen(false);
+    setWikiHistory([]);
+  }
+
+  async function handleWikiBack() {
+    if (!isTauri()) return;
+    try {
+      if (wikiHistory.length >= 2) {
+        const target = wikiHistory[wikiHistory.length - 2];
+        setWikiHistory((prev) => prev.slice(0, -1));
+        await wikiEmbedNavigate(target);
+        return;
+      }
+      await wikiEmbedGoBack();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function handleWikiHistoryPick(url: string) {
+    if (!isTauri()) return;
+    try {
+      await wikiEmbedNavigate(url);
+    } catch (e) {
+      toast.error(t("toasts.wikiEmbedError", { msg: String(e) }));
+    }
   }
 
   const navItems = [
-    { path: "/", label: "Патч Ноут", icon: BookOpen },
-    { path: "/tier", label: "Тир-лист", icon: LineChart },
-    { path: "/history", label: "История изменений", icon: History },
+    { path: "/", label: t("nav.patchNotes"), icon: BookOpen },
+    { path: "/tier", label: t("nav.tier"), icon: LineChart },
+    { path: "/history", label: t("nav.history"), icon: History },
+    { path: "/augments", label: t("nav.augments"), icon: Sparkles },
+    { path: "/settings", label: t("nav.settings"), icon: Settings },
   ];
-
-  const isDark = effectiveTheme === "dark";
 
   return (
     <ErrorBoundary>
-    <div className={cn(
-      "min-h-screen flex flex-col font-sans selection:bg-blue-100 transition-colors",
-      isDark ? "bg-slate-900 text-slate-50" : "bg-slate-50 text-slate-900"
-    )}>
-      <Toaster position="top-right" theme="light" />
-      <header
-        className={cn(
-          "border-b backdrop-blur-md px-4 py-3 sticky top-0 z-50 shadow-sm transition-colors",
-          isDark ? "bg-slate-900/95 border-slate-800" : "bg-white/95 border-slate-200"
-        )}
-      >
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 md:gap-6 flex-wrap">
-             <div className="flex items-center gap-3 cursor-default">
-                <div className="relative">
-                    <img src="/A.svg" alt="LoL Analyzer" className="w-10 h-10 relative z-10 drop-shadow-sm" />
-                </div>
-                <div>
-                  <h1 className={cn(
-                    "text-xl font-bold leading-none tracking-tight transition-colors",
-                    isDark ? "text-slate-50" : "text-slate-900"
-                  )}>LoL Analyzer</h1>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Patch {version}</span>
-                </div>
-             </div>
-            <nav
-              className={cn(
-                "flex flex-wrap gap-1 p-1 rounded-lg border mt-3 md:mt-0 md:ml-4 transition-colors",
-                isDark ? "bg-slate-800/80 border-slate-700" : "bg-white/90 border-slate-200"
-              )}
+      <TooltipProvider delayDuration={300}>
+        <StartupRouteSync />
+        <div className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased selection:bg-primary/25">
+          <Toaster position="top-right" />
+          {wikiOpen && isTauri() && (
+            <div
+              className="fixed left-0 right-0 top-0 z-200 flex h-[52px] shrink-0 items-center gap-2 border-b border-border bg-background px-3 shadow-md"
+              role="toolbar"
+              aria-label={t("lolWiki.chromeTitle")}
             >
-              {navItems.map(({ path, label, icon: Icon }) => (
-                <Link
-                  key={path}
-                  to={path}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
-                    location.pathname === path
-                      ? (isDark
-                          ? "bg-slate-900 text-blue-300 shadow-sm border border-slate-700"
-                          : "bg-white text-blue-600 shadow-sm border border-slate-200")
-                      : (isDark
-                          ? "text-slate-300 hover:text-slate-50 hover:bg-slate-700/70"
-                          : "text-slate-500 hover:text-slate-900 hover:bg-slate-50")
-                  )}
-                >
-                  <Icon className="w-4 h-4" /> {label}
-                </Link>
-              ))}
-            </nav>
-          </div>
-          {/* Группа действий: иконки в один ряд; при маленькой ширине блок уходит под заголовок, но сами кнопки не ломаются по вертикали */}
-          <div className="flex gap-2 items-center md:ml-auto pl-2 justify-start md:justify-end whitespace-nowrap">
-            <button
-              onClick={handleSyncAll}
-              disabled={syncing}
-              title="Скачать патчи"
-              aria-label="Скачать патчи"
-              className={cn(
-                "inline-flex items-center justify-center w-9 h-9 rounded-md border shadow-sm active:scale-95 transition-colors",
-                syncing
-                  ? "bg-slate-100 text-slate-400 border-transparent"
-                  : "bg-white hover:bg-blue-50 text-slate-700 border-slate-200 hover:border-blue-200 hover:text-blue-600"
-              )}
-            >
-              <DownloadCloud className={cn("w-4 h-4", syncing && "animate-bounce")} />
-            </button>
-            <button
-              onClick={() => setSettingsOpen(o => !o)}
-              title="Настройки"
-              aria-label="Настройки"
-              className={cn(
-                "inline-flex items-center justify-center w-9 h-9 rounded-md border shadow-sm active:scale-95 transition-colors",
-                isDark
-                  ? "border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700"
-                  : "border-slate-300 bg-white/80 text-slate-700 hover:bg-slate-50"
-              )}
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-            <button
-               onClick={async () => {
-                  if (confirm("Вы уверены, что хотите очистить локальную базу данных? Это исправит ошибки с данными.")) {
-                      try {
-                          await invoke("clear_database"); 
-                          window.location.reload();
-                      } catch (e) {
-                          toast.info("Функция очистки в разработке. Пожалуйста, перезапустите приложение.");
-                      }
-                  }
-               }}
-               title="Сброс"
-               aria-label="Сброс"
-               className="inline-flex items-center justify-center w-9 h-9 rounded-md border shadow-sm active:scale-95 transition-colors bg-red-50 text-red-600 border-red-300 hover:bg-red-100"
-            >
-               <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-        {settingsOpen && (
-          <div className="max-w-6xl mx-auto mt-3 px-1">
-            <div className="relative">
-              <div
-                className={cn(
-                  "absolute right-0 w-full sm:w-80 rounded-xl shadow-xl p-4 z-40 border transition-colors",
-                  isDark ? "bg-slate-900 border-slate-700" : "bg-white border-slate-200/80"
-                )}
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="shrink-0 gap-1.5"
+                onClick={() => void closeWikiToApp()}
               >
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Настройки</h2>
-                  <button
-                    onClick={() => setSettingsOpen(false)}
-                    className="text-xs text-slate-400 hover:text-slate-600"
+                {t("lolWiki.backToApp")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                aria-label={t("lolWiki.pageBack")}
+                onClick={() => void handleWikiBack()}
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-1.5"
+                    aria-label={t("lolWiki.historyLabel")}
                   >
-                    Закрыть
-                  </button>
-                </div>
-
-                <div className="space-y-3 text-xs">
-                  <div>
-                    <div className="font-semibold text-slate-700 dark:text-slate-200 mb-1">Тема</div>
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        { value: "system" as ThemeOption, label: "Системная" },
-                        { value: "light" as ThemeOption, label: "Светлая" },
-                        { value: "dark" as ThemeOption, label: "Тёмная" },
-                      ].map(opt => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setTheme(opt.value)}
-                          className={cn(
-                            "px-2.5 py-1 rounded-md border text-xs font-medium transition-colors",
-                            theme === opt.value
-                              ? "bg-blue-50 border-blue-400 text-blue-700"
-                              : "bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100"
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
+                    <List className="h-4 w-4" />
+                    <span className="hidden sm:inline">{t("lolWiki.historyLabel")}</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="max-h-72 w-[min(100vw-2rem,24rem)] overflow-y-auto"
+                >
+                  {wikiHistory.length === 0 ? (
+                    <DropdownMenuItem disabled>{t("lolWiki.historyEmpty")}</DropdownMenuItem>
+                  ) : (
+                    [...wikiHistory].reverse().map((u) => (
+                      <DropdownMenuItem
+                        key={u}
+                        className="flex cursor-pointer flex-col items-start gap-0.5 py-2"
+                        onClick={() => void handleWikiHistoryPick(u)}
+                      >
+                        <span className="w-full break-all font-mono text-xs text-muted-foreground">
+                          {shortWikiUrlForList(u)}
+                        </span>
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                {t("lolWiki.chromeTitle")}
+              </span>
+            </div>
+          )}
+          <div
+            className={cn(
+              "flex min-h-screen flex-col",
+              wikiOpen && isTauri() && "hidden",
+            )}
+          >
+            <header className="sticky top-0 z-50 border-b border-border/40 bg-background/75 backdrop-blur-xl supports-backdrop-filter:bg-background/60">
+              <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-3 sm:px-6">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-4 md:gap-8">
+                  <div className="flex min-w-0 cursor-default items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-primary/15 to-primary/5 ring-1 ring-border/60">
+                      <img src="/logo.svg" alt="" className="h-7 w-7" />
+                    </div>
+                    <div className="min-w-0">
+                      <h1 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
+                        Patch Analyzer
+                      </h1>
+                      <p className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                        {t("header.patchLine", { version })}
+                      </p>
                     </div>
                   </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-500 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">Разработчик:</span>
-                    <a
-                      href="https://github.com/Jab04kin"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 hover:text-blue-600"
-                    >
-                      <img
-                        src="https://avatars.githubusercontent.com/Jab04kin"
-                        alt="@Shpinat"
-                        style={{ width: 30, height: 30 }}
-                        className="rounded-full"
-                      />
-                      <span>@Shpinat</span>
-                    </a>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">Организация:</span>
-                    <a
-                      href="https://github.com/RaspizDIYs"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 hover:text-blue-600"
-                    >
-                      <span>RaspizDIYs</span>
-                    </a>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">Сообщество:</span>
-                    <a
-                      href="https://discord.gg/dmx5GqHDcN"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 hover:text-indigo-500"
-                    >
-                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-indigo-600 text-white">
-                        <svg
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                          className="w-3 h-3"
+                  <nav
+                    className="flex w-full min-w-0 sm:w-auto md:ml-0"
+                    aria-label={t("nav.mainLabel")}
+                  >
+                    <div className="inline-flex w-full max-w-full gap-0.5 rounded-full border border-border/50 bg-muted/20 p-1 shadow-inner sm:w-auto">
+                      {navItems.map(({ path, label, icon: Icon }) => (
+                        <NavLink
+                          key={path}
+                          to={path}
+                          end={path === "/"}
+                          className={({ isActive }) =>
+                            cn(
+                              "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full px-3.5 py-2 text-sm font-medium transition-colors sm:flex-initial sm:justify-start sm:px-4",
+                              isActive
+                                ? "bg-background text-foreground shadow-sm ring-1 ring-border/60"
+                                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                            )
+                          }
                         >
-                          <path
-                            fill="currentColor"
-                            d="M20.317 4.369A19.791 19.791 0 0 0 16.558 3a13.276 13.276 0 0 0-.622 1.282 18.27 18.27 0 0 0-3.872 0A12.63 12.63 0 0 0 11.442 3a19.736 19.736 0 0 0-3.76 1.38C4.209 9.05 3.447 13.58 3.782 18.045a19.9 19.9 0 0 0 4.886 2.476 15.02 15.02 0 0 0 1.176-1.9 12.93 12.93 0 0 1-1.853-.9c.156-.113.308-.23.455-.35a8.9 8.9 0 0 0 7.108 0c.15.12.302.237.455.35-.59.35-1.21.65-1.853.9.34.66.73 1.29 1.176 1.9a19.8 19.8 0 0 0 4.886-2.476c.4-4.59-.676-9.08-3.946-13.676ZM9.68 15.332c-1.07 0-1.955-.98-1.955-2.186 0-1.205.86-2.2 1.955-2.2 1.105 0 1.982.995 1.955 2.2 0 1.206-.85 2.186-1.955 2.186Zm4.64 0c-1.07 0-1.955-.98-1.955-2.186 0-1.205.86-2.2 1.955-2.2 1.105 0 1.982.995 1.955 2.2 0 1.206-.85 2.186-1.955 2.186Z"
-                          />
-                        </svg>
-                      </span>
-                      <span>Discord</span>
-                    </a>
-                  </div>
+                          <Icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+                          <span className="truncate">{label}</span>
+                        </NavLink>
+                      ))}
+                    </div>
+                  </nav>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5 rounded-2xl border border-border/50 bg-muted/15 p-1">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground"
+                        aria-label={t("header.openCommunity")}
+                        onClick={() => navigate("/community")}
+                      >
+                        <Youtube className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{t("header.openCommunityHint")}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground"
+                        aria-label={t("header.downloadPatches")}
+                        disabled={syncing}
+                        onClick={handleSyncAll}
+                      >
+                        <DownloadCloud className={cn("h-4 w-4", syncing && "animate-bounce")} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{t("header.downloadPatchesHint")}</TooltipContent>
+                  </Tooltip>
+                  <AlertDialog>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex">
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={t("header.resetDb")}
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                            </Button>
+                          </AlertDialogTrigger>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{t("header.resetDbHint")}</TooltipContent>
+                    </Tooltip>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>{t("dialogs.resetDbTitle")}</AlertDialogTitle>
+                        <AlertDialogDescription>{t("dialogs.resetDbDesc")}</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>{t("dialogs.cancel")}</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={async () => {
+                            try {
+                              await invoke("clear_database");
+                              setPatchData(null);
+                              setNewPatches(new Set());
+                              await refreshPatchesStatus(patchesList);
+                              await loadData(version, false);
+                              toast.success(t("toasts.resetDone"));
+                            } catch {
+                              toast.info(t("toasts.resetManual"));
+                            }
+                          }}
+                        >
+                          {t("dialogs.confirmReset")}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
               </div>
-            </div>
+            </header>
+            <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-6 sm:py-8">
+              <ErrorBoundary>
+                <Routes>
+                  <Route
+                    path="/"
+                    element={
+                      <PatchReleaseView
+                        data={patchData}
+                        version={version}
+                        patchesList={patchesList}
+                        onVersionChange={setVersionPersist}
+                        loading={loading}
+                        newPatches={newPatches}
+                      />
+                    }
+                  />
+                  <Route path="/tier" element={<TierListView />} />
+                  <Route path="/history" element={<ChampionHistoryView />} />
+                  <Route path="/augments" element={<AugmentsPage />} />
+                  <Route
+                    path="/settings"
+                    element={<SettingsPage theme={theme} onThemeChange={setTheme} />}
+                  />
+                  <Route path="/community" element={<CommunityPage />} />
+                </Routes>
+              </ErrorBoundary>
+            </main>
+            <footer className="sticky bottom-0 z-40 border-t border-border/50 bg-background/90 backdrop-blur-md supports-backdrop-filter:bg-background/75">
+              <div className="mx-auto max-w-6xl px-2 py-2 sm:px-4">
+                <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("lolWiki.category")}
+                </p>
+                <ScrollArea className="w-full">
+                  <div className="flex w-max min-w-full flex-nowrap gap-1 pb-1 sm:flex-wrap sm:justify-center">
+                    {LOL_WIKI_ENTRIES.map(({ url, labelKey }) => (
+                      <Button
+                        key={url}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 rounded-full px-3 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => void openWikiUrl(url)}
+                      >
+                        {t(labelKey)}
+                      </Button>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+            </footer>
           </div>
-        )}
-      </header>
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-4 sm:px-6 sm:py-6">
-        <ErrorBoundary>
-          <Routes>
-            <Route path="/" element={<PatchReleaseView data={patchData} version={version} patchesList={patchesList} onVersionChange={setVersion} loading={loading} patchesStatus={patchesStatus} newPatches={newPatches} />} />
-            <Route path="/tier" element={<TierListView />} />
-            <Route path="/history" element={<ChampionHistoryView />} />
-          </Routes>
-        </ErrorBoundary>
-      </main>
-      <SupabaseStatusIndicator />
-    </div>
+        </div>
+      </TooltipProvider>
     </ErrorBoundary>
   );
 }
 
-function SupabaseStatusIndicator() {
-  const [status, setStatus] = useState<"active" | "inactive" | "error" | "checking">("checking");
-
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const result = await invoke<boolean>("check_supabase_status");
-        setStatus(result ? "active" : "inactive");
-      } catch (error) {
-        setStatus("error");
-      }
-    };
-
-    checkStatus();
-    const interval = setInterval(checkStatus, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const getStatusColor = () => {
-    switch (status) {
-      case "active":
-        return "bg-green-500";
-      case "error":
-        return "bg-red-500";
-      case "inactive":
-      case "checking":
-      default:
-        return "bg-gray-400";
-    }
-  };
-
-  const isPulsing = status === "active";
-
+function CustomPatchSelect({
+  value,
+  options,
+  onChange,
+  loading,
+  newPatches,
+}: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+  loading: boolean;
+  newPatches?: Set<string>;
+}) {
+  const { t } = useTranslation();
   return (
-    <div className="fixed bottom-4 right-4 flex items-center gap-2 px-3 py-2 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-50">
-      <div className="relative">
-        <div
-          className={cn(
-            "w-3 h-3 rounded-full",
-            getStatusColor(),
-            isPulsing && "animate-pulse"
-          )}
-        />
-        {isPulsing && (
-          <div
-            className={cn(
-              "absolute inset-0 rounded-full bg-green-500",
-              "animate-ping opacity-75"
-            )}
-          />
-        )}
-      </div>
-      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-        data
-      </span>
-    </div>
-  );
-}
-
-function CustomPatchSelect({ value, options, onChange, loading, patchesStatus, newPatches }: { value: string, options: string[], onChange: (v: string) => void, loading: boolean, patchesStatus?: Record<string, boolean>, newPatches?: Set<string> }) {
-    const [isOpen, setIsOpen] = useState(false);
-    const ref = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => { if (ref.current && !ref.current.contains(event.target as Node)) setIsOpen(false); };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [ref]);
-
-    return (
-        <div className="relative" ref={ref}>
-            <button 
-                onClick={() => setIsOpen(!isOpen)}
-                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-sm w-32 justify-between"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          className="h-9 min-w-34 justify-between gap-2 rounded-full border-border/60 bg-background/80 px-3.5 text-sm font-medium shadow-sm"
+          disabled={loading}
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500/90 shadow-[0_0_0_2px_rgba(16,185,129,0.25)]" />
+          <span className={cn("truncate", loading && "opacity-50")}>{value}</span>
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-80 w-56 overflow-y-auto">
+        {options.map((opt) => {
+          const isCurrent = opt === value;
+          const isNew = newPatches?.has(opt) ?? false;
+          return (
+            <DropdownMenuItem
+              key={opt}
+              onClick={() => onChange(opt)}
+              className={cn(isCurrent && "bg-accent")}
             >
-                <div className="flex items-center gap-2">
-                  {/* Зеленый круг для текущего патча */}
-                  <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.4)]" />
-                  <span className={cn("truncate", loading && "opacity-50")}>{value}</span>
-                </div>
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", isOpen && "rotate-180")} />
-            </button>
-            {isOpen && (
-                <div className="absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in fade-in zoom-in-95 duration-200">
-                    {options.map(opt => {
-                        const exists = patchesStatus?.[opt] ?? false;
-                        const isCurrent = opt === value;
-                        const isNew = newPatches?.has(opt) ?? false;
-                        return (
-                            <div 
-                                key={opt} 
-                                onClick={() => { onChange(opt); setIsOpen(false); }}
-                                className={cn("px-3 py-2 rounded-lg text-sm font-medium cursor-pointer flex items-center justify-between transition-colors", isCurrent ? "bg-blue-50 text-blue-600" : "hover:bg-slate-50 text-slate-700")}
-                            >
-                                <div className="flex items-center gap-2">
-                                    {isCurrent ? (
-                                        <Circle className="w-3 h-3 text-green-500 fill-green-500" />
-                                    ) : exists ? (
-                                        <Check className="w-3 h-3 text-green-500" />
-                                    ) : (
-                                        <X className="w-3 h-3 text-red-500" />
-                                    )}
-                                    <span>Patch {opt}</span>
-                                    {isNew && (
-                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">
-                                            NEW
-                                        </span>
-                                    )}
-                                </div>
-                                {isCurrent && <Check className="w-3 h-3" />}
-                            </div>
-                        );
-                    })}
-                </div>
-            )}
-        </div>
-    );
-}
-
-// ... LogsView, ChampionHistoryView, PatchReleaseView, MetaChangesView, PredictionsView, etc. same as before ...
-// Need to include them to be valid. I will use shortened versions if unchanged logic, but full if needed.
-// Actually, I'll just output the full file content for safety.
-
-function LogsView({ logs }: { logs: LogEntry[] }) {
-  return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-       <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-slate-900">Системные Логи</h2>
-          <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded">Live Updates</span>
-       </div>
-       <div className="bg-slate-900 rounded-xl p-4 h-[600px] overflow-y-auto font-mono text-xs custom-scrollbar">
-          {logs.length === 0 ? (
-            <div className="text-slate-500 italic text-center mt-20">Нет записей...</div>
-          ) : (
-            logs.map((log, i) => (
-               <div key={i} className="flex gap-3 mb-1.5 border-b border-slate-800/50 pb-1.5 last:border-0 hover:bg-white/5 p-1 rounded transition-colors">
-                  <span className="text-slate-500 shrink-0 select-none">{log.timestamp}</span>
-                  <span className={cn("shrink-0 font-bold w-16", 
-                      log.level === "INFO" ? "text-blue-400" : 
-                      log.level === "ERROR" ? "text-red-400" : 
-                      log.level === "WARN" ? "text-yellow-400" : "text-green-400"
-                  )}>{log.level}</span>
-                  <span className="text-slate-300 break-all">{log.message}</span>
-               </div>
-            ))
-          )}
-       </div>
-    </div>
+              <span className="flex flex-1 items-center gap-2">
+                {isCurrent ? (
+                  <Circle className="h-3 w-3 fill-green-500 text-green-500" />
+                ) : (
+                  <span className="inline-block w-3 shrink-0" aria-hidden />
+                )}
+                <span>{t("header.patchLine", { version: opt })}</span>
+                {isNew && (
+                  <UiBadge variant="warning" className="px-1 py-0 text-[10px]">
+                    NEW
+                  </UiBadge>
+                )}
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
 function TierListView() {
+  const { t } = useTranslation();
   const [data, setData] = useState<TierEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
@@ -619,64 +787,14 @@ function TierListView() {
   }, []);
 
   useEffect(() => {
-    async function loadDDragon() {
-      try {
-        const verResp = await fetch("https://ddragon.leagueoflegends.com/api/versions.json");
-        const versions: string[] = await verResp.json();
-        const latest = versions[0] || "15.23.1";
-
-        const [itemsRuResp, itemsEnResp] = await Promise.all([
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/ru_RU/item.json`),
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/en_US/item.json`),
-        ]);
-        const itemsRuJson = await itemsRuResp.json();
-        const itemsEnJson = await itemsEnResp.json();
-
-        const items: ItemListItem[] = Object.entries<any>(itemsRuJson.data || {}).map(
-          ([id, ru]) => {
-            const en = itemsEnJson.data?.[id] ?? {};
-            return {
-              id: id as string,
-              name: ru.name as string,
-              nameEn: (en.name as string) || (ru.name as string),
-              icon_url: `https://ddragon.leagueoflegends.com/cdn/${latest}/img/item/${id}.png`,
-            };
-          },
-        );
+    void loadItemsRunesHybrid()
+      .then(({ items, runes }) => {
         setAllItems(items);
-
-        const [runesRuResp, runesEnResp] = await Promise.all([
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/ru_RU/runesReforged.json`),
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/en_US/runesReforged.json`),
-        ]);
-        const runesRuJson: any[] = await runesRuResp.json();
-        const runesEnJson: any[] = await runesEnResp.json();
-
-        const runes: RuneListItem[] = [];
-        runesRuJson.forEach((treeRu, treeIndex) => {
-          const treeEn = runesEnJson[treeIndex] || {};
-          const styleKey = treeRu.key || "";
-          (treeRu.slots || []).forEach((slot: any, slotIndex: number) => {
-            (slot.runes || []).forEach((runeRu: any, runeIndex: number) => {
-              const runeEn = (((treeEn.slots || [])[slotIndex] || {}).runes || [])[runeIndex] || {};
-              const runeId = runeRu.id || `${treeIndex}-${slotIndex}-${runeIndex}`;
-              runes.push({
-                id: runeId,
-                name: runeRu.name as string,
-                nameEn: (runeEn.name as string) || (runeRu.name as string),
-                icon_url: `https://ddragon.leagueoflegends.com/cdn/img/${runeRu.icon}`,
-                key: runeRu.key || "",
-                style: styleKey,
-              });
-            });
-          });
-        });
         setAllRunes(runes);
-      } catch (e) {
+      })
+      .catch(e => {
         console.error(e);
-      }
-    }
-    loadDDragon();
+      });
   }, []);
 
   const filtered = data.filter(entry => {
@@ -739,108 +857,231 @@ function TierListView() {
     navigate(`/history?type=${encodeURIComponent(type)}&name=${encodeURIComponent(entry.name)}`);
   };
 
+  const categoryLabel = (entry: TierEntry) =>
+    entry.category === "Champions"
+      ? t("tier.categoryChampion")
+      : entry.category === "Runes"
+        ? t("tier.categoryRune")
+        : entry.category === "Items"
+          ? t("tier.categoryItem")
+          : t("tier.categoryRuneItem");
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">Тир-лист (20 патчей)</h2>
-        <div className="inline-flex rounded-xl border border-slate-200 bg-white dark:bg-slate-900 p-0.5 text-xs font-semibold">
-          {[
-            { key: "champion", label: "Чемпионы" },
-            { key: "rune", label: "Руны" },
-            { key: "item", label: "Предметы" },
-          ].map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => {
-                setEntityType(tab.key as any);
-              }}
-              className={cn(
-                "px-3 py-1 rounded-lg transition-colors",
-                entityType === tab.key
-                  ? "bg-white text-blue-600 shadow-sm"
-                  : "text-slate-500 hover:text-slate-900",
-              )}
+    <div className="animate-in fade-in duration-500">
+      <article className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm shadow-black/3 dark:shadow-black/20">
+        <div className="border-b border-border/50 bg-muted/10 px-5 py-6 sm:px-8">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("tier.aggregation")}
+              </p>
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                {t("tier.title")}
+              </h2>
+              <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                {t("tier.subtitle")}
+              </p>
+            </div>
+            <Tabs
+              value={entityType}
+              onValueChange={(v) => setEntityType(v as "champion" | "rune" | "item")}
+              className="w-full lg:w-auto"
             >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {loading && (
-        <div className="text-center py-20 text-slate-400 flex flex-col items-center gap-4">
-          <RefreshCw className="animate-spin w-8 h-8 text-blue-500" />
-          Строим тир-лист...
-        </div>
-      )}
-
-      {!loading && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm overflow-hidden">
-          <div className="grid grid-cols-12 text-xs font-semibold text-slate-500 dark:text-slate-300 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-4 py-2">
-            <div className="col-span-5">Сущность</div>
-            <div className="col-span-2 text-center text-emerald-700">↑ Buff</div>
-            <div className="col-span-2 text-center text-red-700">↓ Nerf</div>
-            <div className="col-span-2 text-center text-slate-600">⇄ Изм.</div>
-            <div className="col-span-1 text-center text-slate-500">Score</div>
-          </div>
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {filtered.map((entry, idx) => {
-              const { icon, name } = resolveIconAndName(entry);
-              const score = entry.buffs - entry.nerfs;
-              return (
-                <button
-                  key={entry.name + entry.category + idx}
-                  onClick={() => handleOpenHistory(entry)}
-                  className="w-full grid grid-cols-12 items-center px-4 py-2 text-sm hover:bg-blue-50/60 dark:hover:bg-slate-800/80 transition-colors bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50"
+              <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 lg:w-auto">
+                <TabsTrigger
+                  value="champion"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
                 >
-                  <div className="col-span-5 flex items-center gap-3">
-                    <span className="w-6 text-[11px] text-slate-400 font-mono">#{idx + 1}</span>
-                    {icon && (
-                      <img
-                        src={cleanUrl(icon)}
-                        className="w-8 h-8 rounded-full border border-slate-200 bg-slate-100 object-cover"
-                        alt=""
-                      />
-                    )}
-                    {!icon && (
-                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400 border border-slate-200">
-                        {name.slice(0, 2)}
-                      </div>
-                    )}
-                    <span className="font-semibold text-slate-800 dark:text-slate-50">{name}</span>
-                    <span className="ml-2 text-[11px] text-slate-400">
-                      {entry.category === "Champions" ? "Чемпион" : entry.category === "Runes" ? "Руна" : entry.category === "Items" ? "Предмет" : "Руна/Предмет"}
-                    </span>
-                  </div>
-                  <div className="col-span-2 text-center text-emerald-700 font-semibold text-xs">
-                    {entry.buffs}
-                  </div>
-                  <div className="col-span-2 text-center text-red-700 font-semibold text-xs">
-                    {entry.nerfs}
-                  </div>
-                  <div className="col-span-2 text-center text-slate-600 font-semibold text-xs">
-                    {entry.adjusted}
-                  </div>
-                  <div className="col-span-1 text-center text-xs font-mono font-semibold" style={{ color: score > 0 ? '#059669' : score < 0 ? '#dc2626' : '#64748b' }}>
-                    {score > 0 ? `+${score}` : score < 0 ? score : "0"}
-                  </div>
-                </button>
-              );
-            })}
-            {!loading && filtered.length === 0 && (
-              <div className="px-4 py-6 text-center text-sm text-slate-400">
-                Нет данных для тир-листа. Скачай патчи и попробуй снова.
-              </div>
-            )}
+                  {t("tier.champions")}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="rune"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                >
+                  {t("tier.runes")}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="item"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                >
+                  {t("tier.items")}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           </div>
         </div>
-      )}
+
+        <div className="min-h-48">
+          {loading && (
+            <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+              <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+              <p className="text-sm text-muted-foreground">{t("tier.building")}</p>
+            </div>
+          )}
+
+          {!loading && (
+            <>
+              <div className="hidden md:block overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-border/50 bg-muted/15 hover:bg-muted/15">
+                      <TableHead className="w-[40%] pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("tier.entity")}
+                      </TableHead>
+                      <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-chart-up">
+                        ↑ Buff
+                      </TableHead>
+                      <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-chart-down">
+                        ↓ Nerf
+                      </TableHead>
+                      <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("tier.changes")}
+                      </TableHead>
+                      <TableHead className="pr-6 text-center text-xs font-semibold uppercase tracking-wide text-chart-muted">
+                        Score
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((entry, idx) => {
+                      const { icon, name } = resolveIconAndName(entry);
+                      const score = entry.buffs - entry.nerfs;
+                      return (
+                        <TableRow
+                          key={entry.name + entry.category + idx}
+                          className="cursor-pointer border-border/40 transition-colors hover:bg-muted/25"
+                          onClick={() => handleOpenHistory(entry)}
+                        >
+                          <TableCell className="py-3.5 pl-6">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className="w-7 shrink-0 text-center font-mono text-[11px] text-muted-foreground">
+                                {idx + 1}
+                              </span>
+                              {icon && (
+                                <img
+                                  src={cleanUrl(icon)}
+                                  className="h-9 w-9 shrink-0 rounded-full border border-border/60 bg-muted object-cover"
+                                  alt=""
+                                />
+                              )}
+                              {!icon && (
+                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted text-[10px] font-bold text-muted-foreground">
+                                  {name.slice(0, 2)}
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <div className="truncate font-medium text-foreground">{name}</div>
+                                <div className="text-[11px] text-muted-foreground">{categoryLabel(entry)}</div>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-3.5 text-center text-sm font-semibold tabular-nums text-chart-up">
+                            {entry.buffs}
+                          </TableCell>
+                          <TableCell className="py-3.5 text-center text-sm font-semibold tabular-nums text-chart-down">
+                            {entry.nerfs}
+                          </TableCell>
+                          <TableCell className="py-3.5 text-center text-sm font-medium tabular-nums text-muted-foreground">
+                            {entry.adjusted}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "py-3.5 pr-6 text-center font-mono text-sm font-semibold tabular-nums",
+                              score > 0 && "text-chart-up",
+                              score < 0 && "text-chart-down",
+                              score === 0 && "text-chart-muted",
+                            )}
+                          >
+                            {score > 0 ? `+${score}` : score < 0 ? score : "0"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {filtered.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="py-14 text-center text-sm text-muted-foreground">
+                          {t("tier.noData")}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="md:hidden divide-y divide-border/50">
+                {filtered.map((entry, idx) => {
+                  const { icon, name } = resolveIconAndName(entry);
+                  const score = entry.buffs - entry.nerfs;
+                  return (
+                    <button
+                      key={entry.name + entry.category + idx}
+                      type="button"
+                      onClick={() => handleOpenHistory(entry)}
+                      className="flex w-full flex-col gap-3 p-4 text-left transition-colors hover:bg-muted/20 active:bg-muted/30"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="w-8 shrink-0 text-center font-mono text-xs text-muted-foreground">
+                          #{idx + 1}
+                        </span>
+                        {icon && (
+                          <img
+                            src={cleanUrl(icon)}
+                            className="h-10 w-10 shrink-0 rounded-full border border-border/60 bg-muted object-cover"
+                            alt=""
+                          />
+                        )}
+                        {!icon && (
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted text-xs font-bold text-muted-foreground">
+                            {name.slice(0, 2)}
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold leading-tight text-foreground">{name}</div>
+                          <div className="text-[11px] text-muted-foreground">{categoryLabel(entry)}</div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 pl-11 text-xs">
+                        <span className="tabular-nums text-chart-up">↑ {entry.buffs}</span>
+                        <span className="tabular-nums text-chart-down">↓ {entry.nerfs}</span>
+                        <span className="tabular-nums text-muted-foreground">⇄ {entry.adjusted}</span>
+                        <span
+                          className={cn(
+                            "font-mono font-semibold tabular-nums",
+                            score > 0 && "text-chart-up",
+                            score < 0 && "text-chart-down",
+                            score === 0 && "text-chart-muted",
+                          )}
+                        >
+                          {score > 0 ? `+${score}` : score < 0 ? score : "0"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <div className="px-4 py-14 text-center text-sm text-muted-foreground">
+                    {t("tier.noData")}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </article>
     </div>
   );
 }
 function ChampionHistoryView() {
+  const { t, i18n } = useTranslation();
+  const [dateFmt, setDateFmt] = useState(() => loadAppPreferences().dateFormat);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
   const location = useLocation();
+
+  useEffect(() => {
+    const h = () => setDateFmt(loadAppPreferences().dateFormat);
+    window.addEventListener("app-prefs-changed", h);
+    return () => window.removeEventListener("app-prefs-changed", h);
+  }, []);
 
   const [champion, setChampion] = useState<ChampionListItem | null>(null);
   const [selectedRune, setSelectedRune] = useState<RuneListItem | null>(null);
@@ -853,9 +1094,10 @@ function ChampionHistoryView() {
 
   const [history, setHistory] = useState<ChampionHistoryEntry[]>([]);
   const [aggregatedGroups, setAggregatedGroups] = useState<{ title: string | null, icon: string | null, changes: string[] }[]>([]);
+  const [aggregatedChangeTrends, setAggregatedChangeTrends] = useState<ChangeTrend[][]>([]);
   const [loading, setLoading] = useState(false);
   const [prefill, setPrefill] = useState<{ type: "champion" | "rune" | "item"; name: string } | null>(null);
-  
+
   // Состояние для иконки руны/предмета
   const [iconUrl, setIconUrl] = useState<string | null>(null);
   const [useFallback, setUseFallback] = useState(false);
@@ -915,76 +1157,17 @@ function ChampionHistoryView() {
     }
   }, [prefill, allChamps, allRunes, allItems]);
 
-  // Руны и предметы из Data Dragon (ru + en для поиска)
   useEffect(() => {
-    async function loadDDragon() {
-      try {
-        const verResp = await fetch("https://ddragon.leagueoflegends.com/api/versions.json");
-        const versions: string[] = await verResp.json();
-        const latest = versions[0] || "15.23.1";
-
-        // ITEMS ru + en
-        const [itemsRuResp, itemsEnResp] = await Promise.all([
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/ru_RU/item.json`),
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/en_US/item.json`),
-        ]);
-        const itemsRuJson = await itemsRuResp.json();
-        const itemsEnJson = await itemsEnResp.json();
-
-        const items: ItemListItem[] = Object.entries<any>(itemsRuJson.data || {})
-          .filter(([_, ru]) => {
-            // фильтрация: только предметы, доступные на карте 11 (Summoner's Rift) и продаваемые
-            const maps = ru.maps || {};
-            const gold = ru.gold || {};
-            return maps["11"] && gold.purchasable !== false;
-          })
-          .map(([id, ru]) => {
-            const en = itemsEnJson.data?.[id] ?? {};
-            return {
-              id: id as string,
-              name: ru.name as string,
-              nameEn: (en.name as string) || (ru.name as string),
-              icon_url: `https://ddragon.leagueoflegends.com/cdn/${latest}/img/item/${id}.png`,
-            };
-          });
+    void loadItemsRunesHybrid({ itemsSrPurchasableOnly: true })
+      .then(({ items, runes }) => {
         setAllItems(items);
-
-        // RUNES ru + en
-        const [runesRuResp, runesEnResp] = await Promise.all([
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/ru_RU/runesReforged.json`),
-          fetch(`https://ddragon.leagueoflegends.com/cdn/${latest}/data/en_US/runesReforged.json`),
-        ]);
-        const runesRuJson: any[] = await runesRuResp.json();
-        const runesEnJson: any[] = await runesEnResp.json();
-
-        const runes: RuneListItem[] = [];
-        runesRuJson.forEach((treeRu, treeIndex) => {
-          const treeEn = runesEnJson[treeIndex] || {};
-          const styleKey = treeRu.key || "";
-          (treeRu.slots || []).forEach((slot: any, slotIndex: number) => {
-            (slot.runes || []).forEach((runeRu: any, runeIndex: number) => {
-              const runeEn = (((treeEn.slots || [])[slotIndex] || {}).runes || [])[runeIndex] || {};
-              const runeId = runeRu.id || `${treeIndex}-${slotIndex}-${runeIndex}`;
-              runes.push({
-                id: runeId,
-                name: runeRu.name as string,
-                nameEn: (runeEn.name as string) || (runeRu.name as string),
-                icon_url: `https://ddragon.leagueoflegends.com/cdn/img/${runeRu.icon}`,
-                key: runeRu.key || "",
-                style: styleKey,
-              });
-            });
-          });
-        });
         setAllRunes(runes);
-      } catch (e) {
+      })
+      .catch(e => {
         console.error(e);
-        toast.error("Не удалось загрузить список рун/предметов из Data Dragon");
-      }
-    }
-
-    loadDDragon();
-  }, []);
+        toast.error(t("toasts.ddragonRunesItemsError"));
+      });
+  }, [t]);
 
   // Загружем названия рун/предметов, которые менялись в последних 20 патчах
   useEffect(() => {
@@ -1072,7 +1255,7 @@ function ChampionHistoryView() {
       setUseFallback(false);
       return;
     }
-    
+
     const lastChange = history[history.length - 1]?.change;
     if (entityType === "rune") {
       const url = lastChange?.image_url || getFallbackIcon(selectedRune?.name || null, lastChange?.image_url || null);
@@ -1087,951 +1270,1329 @@ function ChampionHistoryView() {
   }, [entityType, selectedRune, selectedItem, history.length]);
 
   useEffect(() => {
-      if (!history || history.length === 0) return;
+    if (!history || history.length === 0) return;
 
-      // 1. Calculate Net Changes for Summary
-      // Strategy: Group by Ability/Stat Title. Then try to parse changes.
-      // If we detect "Stat: X -> Y" and later "Stat: Y -> Z", we want "Stat: X -> Z".
-      
-      const groups = new Map<string, { icon: string | null, rawChanges: { date: Date, text: string }[] }>();
+    // 1. Calculate Net Changes for Summary
+    // Strategy: Group by Ability/Stat Title. Then try to parse changes.
+    // If we detect "Stat: X -> Y" and later "Stat: Y -> Z", we want "Stat: X -> Z".
 
-      // Process oldest to newest to build the chain
-      // Sort by version ascending since dates might be identical
-      const chronologicalHistory = [...history].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
+    const groups = new Map<string, { icon: string | null, rawChanges: { date: Date, text: string }[] }>();
 
-      chronologicalHistory.forEach(h => {
-          // Приоритет иконки: сначала из change.image_url (для рун/предметов), потом из details
-          const mainIcon = h.change.image_url || null;
-          if (h.change.details) {
-              h.change.details.forEach(d => {
-                  const key = d.title || "Основные показатели"; // Default key if null
-                  if (!groups.has(key)) {
-                      // Используем иконку из патч-нотов (change.image_url) или из деталей
-                      groups.set(key, { icon: mainIcon || d.icon_url || null, rawChanges: [] });
-                  }
-                  if (d.changes) {
-                      d.changes.forEach(c => {
-                          groups.get(key)!.rawChanges.push({ date: new Date(h.date), text: c });
-                      });
-                  }
-              });
+    // Process oldest to newest to build the chain
+    // Sort by version ascending since dates might be identical
+    const chronologicalHistory = [...history].sort((a, b) => compareVersions(a.patch_version, b.patch_version));
+
+    chronologicalHistory.forEach(h => {
+      // Приоритет иконки: сначала из change.image_url (для рун/предметов), потом из details
+      const mainIcon = h.change.image_url || null;
+      if (h.change.details) {
+        h.change.details.forEach(d => {
+          const key = d.title || t("patchView.defaultStats");
+          if (!groups.has(key)) {
+            // Используем иконку из патч-нотов (change.image_url) или из деталей
+            groups.set(key, { icon: mainIcon || d.icon_url || null, rawChanges: [] });
           }
+          if (d.changes) {
+            d.changes.forEach(c => {
+              groups.get(key)!.rawChanges.push({ date: new Date(h.date), text: c });
+            });
+          }
+        });
+      }
+    });
+
+    // Smart Deduplication and Net Change Calculation
+    const finalGroups: { title: string | null, icon: string | null, changes: string[] }[] = [];
+
+    groups.forEach((value, key) => {
+      // Map to track numeric stats: "Stat Name" -> { startVal, endVal, fullStart, fullEnd }
+      // This is hard to do perfectly with regex, so we use a simplified approach:
+      // If multiple lines look like they describe the same stat (fuzzy match name), we keep the "Chain".
+
+      // Simplest approach for now satisfying user:
+      // If we have multiple entries for the exact same stat string structure "Name: A -> B", keep the oldest A and newest B.
+
+      const statChains = new Map<string, { start: string, end: string, template: string }>();
+      const otherChanges: string[] = [];
+
+      value.rawChanges.forEach(item => {
+        // Try to parse "Name: Val1 -> Val2" or "Name Val1 -> Val2"
+        // Relaxed Regex to capture ANY value content including text
+        const match = item.text.match(/^(.+?)(?::\s*|\s+)(.*?)\s*(?:→|⇒|->)\s*(.*)$/);
+
+        if (match) {
+          const statName = match[1].trim();
+          const oldVal = match[2].trim();
+          const newVal = match[3].trim();
+
+          if (!statChains.has(statName)) {
+            statChains.set(statName, { start: oldVal, end: newVal, template: item.text });
+          } else {
+            // Update the end value to the newest one
+            statChains.get(statName)!.end = newVal;
+          }
+        } else {
+          // If not a simple numeric chain, just add to list (but we want to avoid duplicates if exactly same?)
+          // User said: "It is written twice".
+          // We will just keep unique strings for non-numeric changes.
+          // But if it's a text change that evolves?
+          // Ideally we show the LATEST state description.
+          otherChanges.push(item.text);
+        }
       });
 
-      // Smart Deduplication and Net Change Calculation
-      const finalGroups: { title: string | null, icon: string | null, changes: string[] }[] = [];
+      // Build final list
+      const computedChanges: string[] = [];
 
-      groups.forEach((value, key) => {
-          // Map to track numeric stats: "Stat Name" -> { startVal, endVal, fullStart, fullEnd }
-          // This is hard to do perfectly with regex, so we use a simplified approach:
-          // If multiple lines look like they describe the same stat (fuzzy match name), we keep the "Chain".
-          
-          // Simplest approach for now satisfying user:
-          // If we have multiple entries for the exact same stat string structure "Name: A -> B", keep the oldest A and newest B.
-          
-          const statChains = new Map<string, { start: string, end: string, template: string }>();
-          const otherChanges: string[] = [];
-
-          value.rawChanges.forEach(item => {
-              // Try to parse "Name: Val1 -> Val2" or "Name Val1 -> Val2"
-              // Relaxed Regex to capture ANY value content including text
-              const match = item.text.match(/^(.+?)(?::\s*|\s+)(.*?)\s*(?:→|⇒|->)\s*(.*)$/);
-              
-              if (match) {
-                  const statName = match[1].trim();
-                  const oldVal = match[2].trim();
-                  const newVal = match[3].trim();
-                  
-                  if (!statChains.has(statName)) {
-                      statChains.set(statName, { start: oldVal, end: newVal, template: item.text });
-                  } else {
-                      // Update the end value to the newest one
-                      statChains.get(statName)!.end = newVal;
-                  }
-              } else {
-                  // If not a simple numeric chain, just add to list (but we want to avoid duplicates if exactly same?)
-                  // User said: "It is written twice".
-                  // We will just keep unique strings for non-numeric changes.
-                  // But if it's a text change that evolves?
-                  // Ideally we show the LATEST state description.
-                  otherChanges.push(item.text);
-              }
-          });
-
-          // Build final list
-          const computedChanges: string[] = [];
-          
-          // Add chained stats
-          statChains.forEach((val, name) => {
-              // Reconstruct string: "Name: Start -> End"
-              // Try to preserve original separator from template if possible, or default to ": "
-              const separator = val.template.includes(':') ? ': ' : ' ';
-              computedChanges.push(`${name}${separator}${val.start} → ${val.end}`);
-          });
-
-          // Add other changes (deduplicated)
-          // We prefer the LATEST occurrence of a text description if they conflict? 
-          // Or just all unique ones? User implies "Summary" should be concise.
-          // Let's just take unique ones.
-          const uniqueOthers = Array.from(new Set(otherChanges));
-          computedChanges.push(...uniqueOthers);
-
-          if (computedChanges.length > 0) {
-              finalGroups.push({
-                  title: key,
-                  icon: value.icon,
-                  changes: computedChanges
-              });
-          }
+      // Add chained stats
+      statChains.forEach((val, name) => {
+        // Reconstruct string: "Name: Start -> End"
+        // Try to preserve original separator from template if possible, or default to ": "
+        const separator = val.template.includes(':') ? ': ' : ' ';
+        computedChanges.push(`${name}${separator}${val.start} → ${val.end}`);
       });
 
-      setAggregatedGroups(finalGroups);
-  }, [history]);
+      // Add other changes (deduplicated)
+      // We prefer the LATEST occurrence of a text description if they conflict? 
+      // Or just all unique ones? User implies "Summary" should be concise.
+      // Let's just take unique ones.
+      const uniqueOthers = Array.from(new Set(otherChanges));
+      computedChanges.push(...uniqueOthers);
+
+      if (computedChanges.length > 0) {
+        finalGroups.push({
+          title: key,
+          icon: value.icon,
+          changes: computedChanges
+        });
+      }
+    });
+
+    setAggregatedGroups(finalGroups);
+  }, [history, t]);
+
+  useEffect(() => {
+    if (!aggregatedGroups.length) {
+      setAggregatedChangeTrends([]);
+      return;
+    }
+    let cancelled = false;
+    const texts = aggregatedGroups.flatMap((g) => g.changes);
+    invoke<ChangeTrend[]>("analyze_change_trends", { texts })
+      .then((trends) => {
+        if (cancelled) return;
+        const nested: ChangeTrend[][] = [];
+        let offset = 0;
+        for (const g of aggregatedGroups) {
+          const n = g.changes.length;
+          nested.push(trends.slice(offset, offset + n) as ChangeTrend[]);
+          offset += n;
+        }
+        setAggregatedChangeTrends(nested);
+      })
+      .catch((e) => {
+        console.error(e);
+        toast.error(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aggregatedGroups]);
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">История изменений</h2>
-           <div className="inline-flex rounded-xl border border-slate-200 bg-white dark:bg-slate-900 p-0.5 text-xs font-semibold">
-             {[
-               { key: "champion", label: "Чемпионы" },
-               { key: "rune", label: "Руны" },
-               { key: "item", label: "Предметы" },
-             ].map(tab => (
-               <button
-                 key={tab.key}
-                 onClick={() => {
-                   setEntityType(tab.key as any);
-                   setHistory([]);
-                   setChampion(null);
-                   setSelectedRune(null);
-                   setSelectedItem(null);
-                 }}
-                 className={cn(
-                   "px-3 py-1 rounded-lg transition-colors",
-                   entityType === tab.key
-                     ? "bg-white text-blue-600 shadow-sm"
-                     : "text-slate-500 hover:text-slate-900"
-                 )}
-               >
-                 {tab.label}
-               </button>
-             ))}
-           </div>
-       </div>
+    <div className="animate-in fade-in duration-500">
+      <article className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm shadow-black/3 dark:shadow-black/20">
+        <div className="border-b border-border/50 bg-muted/10 px-5 py-6 sm:px-8">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("history.timelineCaption")}
+              </p>
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                {t("nav.history")}
+              </h2>
+              <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                {t("history.pageIntro")}
+              </p>
+            </div>
+            <Tabs
+              value={entityType}
+              onValueChange={(v) => {
+                setEntityType(v as "champion" | "rune" | "item");
+                setHistory([]);
+                setChampion(null);
+                setSelectedRune(null);
+                setSelectedItem(null);
+              }}
+              className="w-full lg:w-auto"
+            >
+              <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 lg:w-auto">
+                <TabsTrigger
+                  value="champion"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                >
+                  {t("tier.champions")}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="rune"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                >
+                  {t("tier.runes")}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="item"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                >
+                  {t("tier.items")}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        </div>
 
-       {entityType === "champion" ? (
-         <ChampionSelect
-           items={allChamps}
-           selected={champion}
-           onSelect={(c) => {
-             setChampion(c);
-             setSelectedRune(null);
-             setSelectedItem(null);
-           }}
-         />
-       ) : (
-         entityType === "rune" ? (
-           <RuneSelect
-             items={allRunes}
-             selected={selectedRune}
-             onSelect={(r) => {
-               setSelectedRune(r);
-               setChampion(null);
-               setSelectedItem(null);
-             }}
-           />
-         ) : (
-           <ItemSelect
-             items={allItems}
-             selected={selectedItem}
-             onSelect={(it) => {
-               setSelectedItem(it);
-               setChampion(null);
-               setSelectedRune(null);
-             }}
-           />
-         )
-       )}
-       {!loading && history.length > 0 && (
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-6 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-10"><History className="w-24 h-24 text-slate-300" /></div>
-              <div className="flex items-center gap-4 mb-6 relative z-10">
-                   {entityType === "champion" && champion && (
-                     <img
-                       src={cleanUrl(champion.icon_url)}
-                       className="w-16 h-16 rounded-full border-4 border-white shadow-md bg-white object-cover"
-                     />
-                   )}
-                   {entityType !== "champion" && (() => {
-                     return iconUrl ? (
-                       <img
-                         src={cleanUrl(iconUrl)}
-                         className="w-16 h-16 rounded-full border-4 border-white shadow-md bg-white object-cover"
-                         alt=""
-                         onError={async () => {
-                           if (entityType === "rune" && selectedRune?.key && selectedRune?.style && !useFallback) {
-                             setUseFallback(true);
-                             try {
-                               const fallback = await invoke<string | null>("get_fallback_rune_icon", { 
-                                 styleKey: selectedRune.style, 
-                                 runeKey: selectedRune.key 
-                               });
-                               if (fallback) setIconUrl(fallback);
-                             } catch (e) {
-                               // Игнорируем ошибки
-                             }
-                           }
-                         }}
-                       />
-                     ) : null;
-                   })()}
-                   <div>
-                       <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-50">
-                         {entityType === "champion" && champion && champion.name}
-                         {entityType === "rune" && selectedRune && selectedRune.name}
-                         {entityType === "item" && selectedItem && selectedItem.name}
-                       </h3>
-                       <div className="text-xs text-slate-900 dark:text-slate-50 font-bold uppercase tracking-wider bg-white dark:bg-slate-900 px-2 py-1 rounded-md inline-block mt-1 border border-slate-100 dark:border-slate-700">
-                         Общая сводка (20 патчей)
-                       </div>
-                   </div>
+        <div className="space-y-6 px-5 py-6 sm:px-8">
+          <div className="rounded-xl border border-border/50 bg-muted/10 p-4 sm:p-5">
+            {entityType === "champion" ? (
+              <ChampionSelect
+                items={allChamps}
+                selected={champion}
+                onSelect={(c) => {
+                  setChampion(c);
+                  setSelectedRune(null);
+                  setSelectedItem(null);
+                }}
+              />
+            ) : entityType === "rune" ? (
+              <RuneSelect
+                items={allRunes}
+                selected={selectedRune}
+                onSelect={(r) => {
+                  setSelectedRune(r);
+                  setChampion(null);
+                  setSelectedItem(null);
+                }}
+              />
+            ) : (
+              <ItemSelect
+                items={allItems}
+                selected={selectedItem}
+                onSelect={(it) => {
+                  setSelectedItem(it);
+                  setChampion(null);
+                  setSelectedRune(null);
+                }}
+              />
+            )}
+          </div>
+
+          {!loading && history.length > 0 && (
+            <div className="relative overflow-hidden rounded-xl border border-border/50 bg-muted/5 p-5 sm:p-6">
+              <div className="pointer-events-none absolute -right-4 -top-4 opacity-[0.07]">
+                <History className="h-32 w-32 text-muted-foreground" strokeWidth={1.25} />
               </div>
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 p-5 shadow-sm relative z-10 space-y-4 text-slate-900 dark:text-slate-50">
-                  {aggregatedGroups.map((group, i) => (
-                      <div key={i}>
-                          {group.title && (
-                              <div className="flex items-center gap-2 mb-2 border-b border-slate-100 pb-1">
-                                  {(() => {
-                                    let icon: string | null = null;
-                                    if (entityType === "rune") {
-                                      // Для рун: сначала патч-ноты, потом DDragon
-                                      icon = group.icon || getFallbackIcon(group.title, group.icon || null);
-                                    } else if (entityType === "item") {
-                                      // Для предметов: всегда DDragon (игнорируем патч-ноты)
-                                      icon = getFallbackIcon(group.title);
-                                    } else {
-                                      icon = group.icon || getFallbackIcon(group.title);
-                                    }
-                                    return icon ? (
-                                      <img src={cleanUrl(icon)} className="w-6 h-6 rounded bg-slate-100" alt="" />
-                                    ) : null;
-                                  })()}
-                                  <h4 className="font-bold text-slate-900 dark:text-slate-50">{group.title}</h4>
-                              </div>
+              <div className="relative z-10 mb-6 flex flex-col gap-4 sm:flex-row sm:items-center">
+                {entityType === "champion" && champion && (
+                  <img
+                    src={cleanUrl(champion.icon_url)}
+                    className="h-16 w-16 rounded-full border-4 border-background bg-card object-cover shadow-md"
+                  />
+                )}
+                {entityType !== "champion" && (() => {
+                  return iconUrl ? (
+                    <img
+                      src={cleanUrl(iconUrl)}
+                      className="h-16 w-16 rounded-full border-4 border-background bg-card object-cover shadow-md"
+                      alt=""
+                      onError={async () => {
+                        if (entityType === "rune" && selectedRune?.key && selectedRune?.style && !useFallback) {
+                          setUseFallback(true);
+                          try {
+                            const fallback = await invoke<string | null>("get_fallback_rune_icon", {
+                              styleKey: selectedRune.style,
+                              runeKey: selectedRune.key
+                            });
+                            if (fallback) setIconUrl(fallback);
+                          } catch (e) {
+                            // Игнорируем ошибки
+                          }
+                        }
+                      }}
+                    />
+                  ) : null;
+                })()}
+                <div className="min-w-0">
+                  <h3 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                    {entityType === "champion" && champion && champion.name}
+                    {entityType === "rune" && selectedRune && selectedRune.name}
+                    {entityType === "item" && selectedItem && selectedItem.name}
+                  </h3>
+                  <UiBadge variant="secondary" className="mt-2 rounded-full font-normal">
+                    {t("history.summaryBadge")}
+                  </UiBadge>
+                </div>
+              </div>
+              <div className="relative z-10 space-y-5 rounded-xl border border-border/50 bg-card/90 p-4 text-foreground shadow-inner sm:p-5">
+                {aggregatedGroups.map((group, i) => (
+                  <div key={i}>
+                    {group.title && (
+                      <div className="mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
+                        {(() => {
+                          let icon: string | null = null;
+                          if (entityType === "rune") {
+                            // Для рун: сначала патч-ноты, потом DDragon
+                            icon = group.icon || getFallbackIcon(group.title, group.icon || null);
+                          } else if (entityType === "item") {
+                            // Для предметов: всегда DDragon (игнорируем патч-ноты)
+                            icon = getFallbackIcon(group.title);
+                          } else {
+                            icon = group.icon || getFallbackIcon(group.title);
+                          }
+                          return icon ? (
+                            <img src={cleanUrl(icon)} className="h-6 w-6 rounded bg-muted" alt="" />
+                          ) : null;
+                        })()}
+                        <h4 className="text-sm font-semibold text-foreground">{group.title}</h4>
+                      </div>
+                    )}
+                    <ul className="space-y-2 pl-2">
+                      {group.changes.map((change, j) => {
+                        const trend = aggregatedChangeTrends[i]?.[j] ?? "neutral";
+                        const lower = change.toLowerCase();
+                        const isNew = lower.includes("новое") || lower.includes("new");
+                        const isRemoved = lower.includes("удалено") || lower.includes("removed");
+                        const liClasses = cn(
+                          "relative flex items-start justify-between gap-2 rounded-md border-l-2 border-primary/30 pl-3 pr-2 text-sm leading-relaxed",
+                          isNew && "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100",
+                          isRemoved && "bg-red-50 text-red-900 dark:bg-red-950/40 dark:text-red-100",
+                        );
+                        const html = highlightSpecialTags(
+                          change
+                            .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold">$1</span>')
+                            .replace(/⇒/g, '<span class="text-muted-foreground mx-1">→</span>')
+                        );
+                        return (
+                          <li key={j} className={liClasses}>
+                            <span dangerouslySetInnerHTML={{
+                              __html: html
+                            }} />
+                            <span className="shrink-0 mt-0.5">
+                              {trend === "up" && <ArrowUp className="w-3 h-3 text-green-600" />}
+                              {trend === "down" && <ArrowDown className="w-3 h-3 text-red-600" />}
+                              {trend === "neutral" && <ArrowRightLeft className="h-3 w-3 text-muted-foreground" />}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {loading && (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+              <p className="text-sm text-muted-foreground">{t("history.loading")}</p>
+            </div>
+          )}
+          {!loading && history.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 px-6 py-14 text-center text-sm text-muted-foreground">
+              {t("history.noData")}
+            </div>
+          )}
+          {history.length > 0 && (
+            <div className="border-t border-border/40 pt-2">
+              <p className="mb-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("history.perPatch")}
+              </p>
+              <div className="relative ml-2 space-y-8 border-l border-border/60 pb-6 pl-5 sm:ml-4 sm:pl-8">
+                {[...history].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
+                  <div key={idx} className="group relative">
+                    <div className="absolute -left-[calc(0.25rem+1px)] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-muted ring-2 ring-background transition-colors group-hover:bg-primary sm:-left-[calc(1.25rem+1px)]" />
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-primary px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-primary-foreground shadow-sm">
+                        Patch {item.patch_version}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {formatAppDate(item.date, dateFmt, i18n.language)}
+                      </span>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/90 p-4 text-foreground shadow-sm transition-all duration-200 hover:border-primary/20 hover:shadow-md sm:p-6">
+                      <div className="mb-4 flex flex-col gap-3 border-b border-border/50 pb-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <h3 className="text-lg font-semibold leading-snug text-foreground sm:text-xl">{item.change.title}</h3>
+                          {item.change.summary && (
+                            <p className="mt-2 rounded-lg border border-border/50 bg-muted/30 p-3 text-sm italic leading-relaxed text-muted-foreground">
+                              &ldquo;{item.change.summary}&rdquo;
+                            </p>
                           )}
-                          <ul className="space-y-2 pl-2">
-                              {group.changes.map((change, j) => {
-                                  const trend = analyzeChangeTrend(change);
+                        </div>
+                        <PatchNoteBadge type={item.change.change_type} />
+                      </div>
+                      <div className="space-y-6">
+                        {Array.isArray(item.change.details) && item.change.details.map((block, i) => (
+                          <div key={i} className="animate-in fade-in duration-500 delay-75">
+                            {block.title && (
+                              <div className="flex items-center gap-3 mb-3">
+                                {block.icon_url && <img src={cleanUrl(block.icon_url)} className="h-8 w-8 rounded-lg border border-border bg-muted shadow-sm" />}
+                                <h4 className="border-b-2 border-transparent pb-0.5 text-sm font-bold text-foreground transition-colors hover:border-primary">
+                                  {block.title}
+                                </h4>
+                              </div>
+                            )}
+                            <ul className="space-y-2">
+                              {Array.isArray(block.changes) && block.changes.map((change, j) => (
+                                (() => {
                                   const lower = change.toLowerCase();
                                   const isNew = lower.includes("новое") || lower.includes("new");
                                   const isRemoved = lower.includes("удалено") || lower.includes("removed");
                                   const liClasses = cn(
-                                    "text-sm pl-3 border-l-2 border-blue-200 relative leading-relaxed flex items-start justify-between gap-2 rounded-md pr-2",
-                                    isNew && "bg-emerald-50 text-emerald-900",
-                                    isRemoved && "bg-red-50 text-red-900",
-                                  );
-                                  const html = highlightSpecialTags(
-                                    change
-                                      .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold">$1</span>')
-                                      .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
+                                    "rounded-lg border border-border bg-card p-3 text-sm text-foreground transition-colors hover:bg-accent/50",
+                                    isNew && "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100",
+                                    isRemoved && "bg-red-50 text-red-900 dark:bg-red-950/40 dark:text-red-100",
                                   );
                                   return (
-                                      <li key={j} className={liClasses}>
-                                          <span dangerouslySetInnerHTML={{ 
-                                              __html: html
-                                          }} />
-                                          <span className="shrink-0 mt-0.5">
-                                              {trend === "up" && <ArrowUp className="w-3 h-3 text-green-600" />}
-                                              {trend === "down" && <ArrowDown className="w-3 h-3 text-red-600" />}
-                                              {trend === "neutral" && <ArrowRightLeft className="w-3 h-3 text-slate-400" />}
-                                          </span>
-                                      </li>
-                                  );
-                              })}
-                          </ul>
-                      </div>
-                  ))}
-              </div>
-          </div>
-       )}
-       {loading && <div className="text-center py-20 text-slate-400 flex flex-col items-center gap-4"><RefreshCw className="animate-spin w-8 h-8 text-blue-500" />Загрузка истории...</div>}
-       {!loading && history.length === 0 && (
-          <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-xl text-slate-500 bg-white dark:bg-slate-900">
-             Данных нет. Нажмите "Скачать патчи" в верхнем меню или выберите другую сущность.
-          </div>
-       )}
-       <div className="relative border-l-2 border-slate-200 ml-6 space-y-8 py-2 pb-10">
-          {[...history].sort((a, b) => compareVersions(b.patch_version, a.patch_version)).map((item, idx) => (
-             <div key={idx} className="relative pl-8 group">
-                <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-slate-200 border-2 border-white group-hover:bg-blue-500 transition-colors ring-4 ring-white" />
-                <div className="flex items-center gap-3 mb-3">
-                    <span className="bg-slate-900 text-white px-3 py-1 rounded-md text-xs font-bold shadow-sm">Patch {item.patch_version}</span>
-                </div>
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-6 shadow-sm hover:shadow-md transition-all hover:border-blue-200 dark:hover:border-slate-500 group-hover:translate-x-1 duration-300 text-slate-900 dark:text-slate-50">
-              <div className="flex items-start justify-between mb-5 pb-4 border-b border-slate-100">
-                       <div>
-                            <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">{item.change.title}</h3>
-                            {item.change.summary && (
-                              <p className="text-sm text-slate-600 dark:text-slate-200 mt-2 italic leading-relaxed bg-white dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-600">
-                                "{item.change.summary}"
-                              </p>
-                            )}
-                       </div>
-                       <Badge type={item.change.change_type} />
-                   </div>
-                   <div className="space-y-6">
-                      {Array.isArray(item.change.details) && item.change.details.map((block, i) => (
-                         <div key={i} className="animate-in fade-in duration-500 delay-75">
-                             {block.title && (
-                                 <div className="flex items-center gap-3 mb-3">
-                                     {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 shadow-sm" />}
-                                     <h4 className="font-bold text-sm border-b-2 border-transparent hover:border-blue-500 transition-colors pb-0.5 text-slate-900 dark:text-slate-50">
-                                       {block.title}
-                                     </h4>
-                                 </div>
-                             )}
-                             <ul className="space-y-2">
-                                {Array.isArray(block.changes) && block.changes.map((change, j) => (
-                                   (() => {
-                                     const lower = change.toLowerCase();
-                                     const isNew = lower.includes("новое") || lower.includes("new");
-                                     const isRemoved = lower.includes("удалено") || lower.includes("removed");
-                                   const liClasses = cn(
-                                       "text-sm bg-white dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-600 hover:bg-blue-50/50 dark:hover:bg-slate-700 transition-colors text-slate-900 dark:text-slate-50",
-                                       isNew && "bg-emerald-50 text-emerald-900",
-                                       isRemoved && "bg-red-50 text-red-900",
-                                     );
-                                     return (
-                                       <li key={j} className={liClasses}>
-                                          <span
-                                            dangerouslySetInnerHTML={{
-                                              __html: highlightSpecialTags(
-                                                change
-                                                  .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold">$1</span>')
-                                                  .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
-                                              ),
-                                            }}
-                                          />
-                                       </li>
-                                     );
-                                   })()
-                                ))}
-                             </ul>
-                         </div>
-                      ))}
-                   </div>
-                </div>
-             </div>
-          ))}
-       </div>
-    </div>
-  );
-}
-
-function PatchReleaseView({ data, version, patchesList, onVersionChange, loading, patchesStatus, newPatches }: { data: PatchData | null, version: string, patchesList: string[], onVersionChange: (v: string) => void, loading: boolean, patchesStatus?: Record<string, boolean>, newPatches?: Set<string> }) {
-  if (!data) return <EmptyState />;
-  return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex items-baseline justify-between border-b border-slate-100 pb-4">
-        <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-50 flex items-center gap-3">Патч {data.version}</h2>
-        <div className="flex items-center gap-3">
-          <span className="text-slate-500 text-xs font-medium bg-slate-100 px-3 py-1 rounded-full">Riot Games Official</span>
-          <CustomPatchSelect 
-            value={version} 
-            options={patchesList} 
-            onChange={onVersionChange} 
-            loading={loading}
-            patchesStatus={patchesStatus}
-            newPatches={newPatches}
-          />
-        </div>
-      </div>
-      <div className="grid gap-4">
-        {data.patch_notes.length === 0 ? (
-          <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-xl bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-200">
-            Патч-ноты не найдены.
-          </div>
-        ) : (
-          data.patch_notes.map((note) => (
-            <div
-              key={note.id}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow group text-slate-900 dark:text-slate-50"
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex gap-4">
-                  <ChampionIcon url={cleanUrl(note.image_url)} name={note.title} />
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">{note.title}</h3>
-                    {note.summary && (
-                      <p className="text-sm text-slate-600 dark:text-slate-200 italic mt-1 border-l-2 border-slate-200 dark:border-slate-600 pl-2 max-w-2xl">
-                        {note.summary}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <Badge type={note.change_type} />
-              </div>
-              <div className="space-y-4 pl-4 border-l-2 border-slate-100 ml-6">
-                  {Array.isArray(note.details) && note.details.map((block, i) => (
-                      <div key={i}>
-                          {block.title && (
-                             <div className="flex items-center gap-2 mb-2">
-                                 {block.icon_url && <img src={cleanUrl(block.icon_url)} className="w-6 h-6 rounded bg-slate-100" />}
-                                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-50">{block.title}</h4>
-                             </div>
-                          )}
-                          <ul className="space-y-2">
-                            {Array.isArray(block.changes) && block.changes.map((change, j) => {
-                                const lower = change.toLowerCase();
-                                const isNew = lower.includes("новое") || lower.includes("new");
-                                const isRemoved = lower.includes("удалено") || lower.includes("removed");
-                                const liClasses = cn(
-                                  "text-sm leading-relaxed rounded-md px-2 py-1",
-                                  "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50",
-                                  isNew && "bg-emerald-50 text-emerald-900",
-                                  isRemoved && "bg-red-50 text-red-900",
-                                );
-                                return (
-                                  <li key={j} className={liClasses}>
+                                    <li key={j} className={liClasses}>
                                       <span
                                         dangerouslySetInnerHTML={{
                                           __html: highlightSpecialTags(
                                             change
                                               .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold">$1</span>')
-                                              .replace(/⇒/g, '<span class="text-slate-400 mx-1">→</span>')
+                                              .replace(/⇒/g, '<span class="text-muted-foreground mx-1">→</span>')
                                           ),
                                         }}
                                       />
-                                  </li>
-                                );
-                            })}
-                          </ul>
+                                    </li>
+                                  );
+                                })()
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
                       </div>
-                  ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))
-        )}
+          )}
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function patchNoteIsBugFix(note: PatchNoteEntry): boolean {
+  const title = note.title.trim().toLowerCase();
+  return (
+    note.change_type === "Fix" ||
+    note.category === "BugFixes" ||
+    title === "исправление ошибки" ||
+    title === "bug fix"
+  );
+}
+
+function findItemByLooseTitle(title: string, items: ItemListItem[]): ItemListItem | undefined {
+  const nameLower = title.trim().toLowerCase();
+  let it = items.find((i) => {
+    const ru = i.name.toLowerCase();
+    const en = i.nameEn.toLowerCase();
+    return (
+      ru === nameLower ||
+      en === nameLower ||
+      ru.includes(nameLower) ||
+      nameLower.includes(ru) ||
+      en.includes(nameLower) ||
+      nameLower.includes(en)
+    );
+  });
+  if (!it && nameLower.includes("солнечного пламени")) {
+    it = items.find((i) => i.nameEn.toLowerCase().includes("sunfire"));
+  }
+  return it;
+}
+
+function findRuneByLooseTitle(title: string, runes: RuneListItem[]): RuneListItem | undefined {
+  const lower = title.trim().toLowerCase();
+  return runes.find((r) => {
+    const ru = r.name.toLowerCase();
+    const en = r.nameEn.toLowerCase();
+    return (
+      ru === lower ||
+      en === lower ||
+      ru.includes(lower) ||
+      lower.includes(ru) ||
+      en.includes(lower) ||
+      lower.includes(en)
+    );
+  });
+}
+
+function resolvePatchNoteLeadIconUrl(
+  note: PatchNoteEntry,
+  champs: ChampionListItem[],
+  items: ItemListItem[],
+  runes: RuneListItem[],
+): string | undefined {
+  const direct = cleanUrl(note.image_url);
+  if (direct) return direct;
+  if (note.category === "Champions") {
+    const t = note.title.trim();
+    const lower = t.toLowerCase();
+    const c = champs.find(
+      (x) =>
+        x.name === t ||
+        x.name_en === t ||
+        x.name.toLowerCase() === lower ||
+        x.name_en.toLowerCase() === lower,
+    );
+    return c ? cleanUrl(c.icon_url) : undefined;
+  }
+  if (note.category === "Items") {
+    const it = findItemByLooseTitle(note.title, items);
+    return it ? cleanUrl(it.icon_url) : undefined;
+  }
+  if (note.category === "Runes") {
+    const r = findRuneByLooseTitle(note.title, runes);
+    return r ? cleanUrl(r.icon_url) : undefined;
+  }
+  if (note.category === "ItemsRunes") {
+    const it = findItemByLooseTitle(note.title, items);
+    if (it) return cleanUrl(it.icon_url);
+    const r = findRuneByLooseTitle(note.title, runes);
+    return r ? cleanUrl(r.icon_url) : undefined;
+  }
+  if (
+    note.category === "ModeArena" ||
+    note.category === "ModeAram" ||
+    note.category === "ModeAramChaos"
+  ) {
+    const t = note.title.trim();
+    const lower = t.toLowerCase();
+    const c = champs.find(
+      (x) =>
+        x.name === t ||
+        x.name_en === t ||
+        x.name.toLowerCase() === lower ||
+        x.name_en.toLowerCase() === lower,
+    );
+    if (c) return cleanUrl(c.icon_url);
+    const it = findItemByLooseTitle(note.title, items);
+    return it ? cleanUrl(it.icon_url) : undefined;
+  }
+  return undefined;
+}
+
+function PatchNoteLeadIcon({
+  note,
+  iconUrl,
+}: {
+  note: PatchNoteEntry;
+  iconUrl?: string;
+}) {
+  if (patchNoteIsBugFix(note)) {
+    return (
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-primary">
+        <Wrench className="h-6 w-6 shrink-0" strokeWidth={2} aria-hidden />
+      </div>
+    );
+  }
+  return <ChampionIcon candidates={note.icon_candidates} url={iconUrl} name={note.title} />;
+}
+
+function PatchReleaseView({ data, version, patchesList, onVersionChange, loading, newPatches }: { data: PatchData | null, version: string, patchesList: string[], onVersionChange: (v: string) => void, loading: boolean, newPatches?: Set<string> }) {
+  const { t } = useTranslation();
+  const [championList, setChampionList] = useState<ChampionListItem[]>([]);
+  const [itemList, setItemList] = useState<ItemListItem[]>([]);
+  const [runeList, setRuneList] = useState<RuneListItem[]>([]);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<string>("All");
+  const { items: skinYoutubeFeed } = useYoutubeFeed(YOUTUBE_CHANNEL_SKINSPOTLIGHTS);
+  useEffect(() => {
+    invoke<ChampionListItem[]>("get_all_champions")
+      .then(setChampionList)
+      .catch(() => { });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { items, runes } = await loadItemsRunesHybrid();
+        if (!cancelled) {
+          setItemList(items);
+          setRuneList(runes);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setCategoryFilter("All");
+  }, [data?.version]);
+
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxUrl(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxUrl]);
+
+  const patchNotes = data?.patch_notes ?? [];
+  const skinYoutubeSearchQuery = (title: string) =>
+    buildSkinSpotlightYoutubeSearch(title, championList)?.searchQuery ?? `SkinSpotlights ${title}`;
+  const categoryCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const n of patchNotes) {
+      m.set(n.category, (m.get(n.category) ?? 0) + 1);
+    }
+    return m;
+  }, [patchNotes]);
+
+  const categoriesWithNotes = useMemo(() => {
+    const ordered = PATCH_NOTE_CATEGORY_TAB_ORDER.filter((c) => (categoryCounts.get(c) ?? 0) > 0);
+    const extras = [...categoryCounts.keys()].filter(
+      (c) => !PATCH_NOTE_CATEGORY_TAB_ORDER.includes(c) && (categoryCounts.get(c) ?? 0) > 0,
+    );
+    extras.sort();
+    return [...ordered, ...extras];
+  }, [categoryCounts]);
+
+  const filteredPatchNotes = useMemo(() => {
+    if (categoryFilter === "All") return patchNotes;
+    return patchNotes.filter((n) => n.category === categoryFilter);
+  }, [patchNotes, categoryFilter]);
+
+  if (loading && !data) {
+    return (
+      <div className="animate-in fade-in duration-300">
+        <div className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm">
+          <Skeleton className="h-[min(38vh,320px)] w-full rounded-none" />
+          <div className="space-y-4 p-6">
+            <Skeleton className="h-10 w-full max-w-md" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+          <div className="space-y-4 border-t border-border/50 p-6 pt-0">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!data) return <EmptyState />;
+  const banner = cleanUrl(data.banner_url ?? undefined);
+
+  const patchHeaderBar = (
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 space-y-1">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          {t("patchView.lolNotes")}
+        </p>
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+          {t("patchView.patchTitle", { version: data.version })}
+        </h2>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <UiBadge variant="secondary" className="rounded-full px-3 font-normal">
+          Riot Games
+        </UiBadge>
+        <CustomPatchSelect
+          value={version}
+          options={patchesList}
+          onChange={onVersionChange}
+          loading={loading}
+          newPatches={newPatches}
+        />
       </div>
     </div>
   );
+
+  return (
+    <div className="animate-in fade-in duration-500">
+      <article className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm shadow-black/3 dark:shadow-black/20">
+        {banner ? (
+          <div className="relative">
+            <div className="max-h-[min(42vh,440px)] min-h-[200px] w-full overflow-hidden">
+              <img
+                src={banner}
+                alt=""
+                className="h-full w-full max-h-[min(42vh,440px)] min-h-[200px] object-cover object-center"
+              />
+            </div>
+            <div
+              className="pointer-events-none absolute inset-0 bg-linear-to-t from-card via-card/40 to-transparent"
+              aria-hidden
+            />
+            <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-card px-5 pb-6 pt-16 sm:px-8">
+              {patchHeaderBar}
+            </div>
+          </div>
+        ) : (
+          <div className="border-b border-border/50 bg-muted/15 px-5 py-8 sm:px-8">{patchHeaderBar}</div>
+        )}
+
+        {data.patch_notes.length > 0 && (
+          <Tabs value={categoryFilter} onValueChange={setCategoryFilter} className="w-full">
+            <div className="sticky top-14 z-10 border-b border-border/50 bg-background/90 px-4 py-3 backdrop-blur-md sm:px-6">
+              <div className="overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <TabsList className="inline-flex h-auto min-h-10 w-max min-w-full flex-nowrap justify-start gap-1 rounded-xl bg-muted/25 p-1 sm:flex-wrap">
+                  <TabsTrigger
+                    value="All"
+                    className="shrink-0 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:text-sm"
+                  >
+                    {t("patchView.allCount", { count: data.patch_notes.length })}
+                  </TabsTrigger>
+                  {categoriesWithNotes.map((c) => (
+                    <TabsTrigger
+                      key={c}
+                      value={c}
+                      className="shrink-0 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:text-sm"
+                    >
+                      {patchNoteCategoryLabel(c, t)} ({categoryCounts.get(c) ?? 0})
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+            </div>
+          </Tabs>
+        )}
+
+        <div className="divide-y divide-border/50">
+          {data.patch_notes.length === 0 ? (
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground sm:px-8">
+              {t("patchView.noNotes")}
+            </div>
+          ) : filteredPatchNotes.length === 0 ? (
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground sm:px-8">
+              {t("patchView.emptyCategory")}
+            </div>
+          ) : categoryFilter === "UpcomingSkinsChromas" ? (
+            <>
+              <div className="grid gap-4 px-5 py-8 sm:grid-cols-2 sm:px-8 lg:grid-cols-3">
+                {filteredPatchNotes.map((note) => (
+                  <div
+                    key={note.id}
+                    className="overflow-hidden rounded-xl border border-border/50 bg-muted/10 shadow-sm"
+                  >
+                    {note.image_url ? (
+                      <button
+                        type="button"
+                        className="aspect-video w-full overflow-hidden bg-muted/30 p-0 text-left"
+                        onClick={() => {
+                          const u = cleanUrl(note.image_url);
+                          if (u) setLightboxUrl(u);
+                        }}
+                      >
+                        <img
+                          src={cleanUrl(note.image_url) ?? ""}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                    ) : null}
+                    <div className="flex items-start justify-between gap-2 p-3">
+                      <h3 className="text-sm font-semibold leading-snug">{note.title}</h3>
+                      <PatchNoteBadge type={note.change_type} />
+                    </div>
+                    <div className="border-t border-border/40 px-3 pb-3 pt-2">
+                      <SkinSpotlightEmbed
+                        feed={skinYoutubeFeed}
+                        noteTitle={note.title}
+                        champions={championList}
+                        searchUrl={`https://www.youtube.com/results?search_query=${encodeURIComponent(
+                          skinYoutubeSearchQuery(note.title),
+                        )}`}
+                        searchLabel={t("patchView.searchOnYoutube")}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-border/50 px-5 py-5 sm:px-8">
+                <YoutubeChannelPanel
+                  channelId={YOUTUBE_CHANNEL_SKINSPOTLIGHTS}
+                  channelPageUrl={YOUTUBE_URL_SKINSPOTLIGHTS}
+                  heading={t("patchView.skinSpotlightsBlock")}
+                  matchTitles={filteredPatchNotes.map((n) => n.title)}
+                  feedItems={skinYoutubeFeed}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              {filteredPatchNotes.map((note) => {
+                if (categoryFilter === "All" && note.category === "UpcomingSkinsChromas") {
+                  const imgUrl = cleanUrl(note.image_url);
+                  const ytSearch = `https://www.youtube.com/results?search_query=${encodeURIComponent(
+                    skinYoutubeSearchQuery(note.title),
+                  )}`;
+                  return (
+                    <div
+                      key={note.id}
+                      className="group px-5 py-8 transition-colors hover:bg-muted/20 sm:px-8"
+                    >
+                      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex min-w-0 gap-4">
+                          {imgUrl ? (
+                            <button
+                              type="button"
+                              className="relative h-32 w-48 shrink-0 overflow-hidden rounded-lg border border-border/50 bg-muted/20"
+                              onClick={() => setLightboxUrl(imgUrl)}
+                            >
+                              <img src={imgUrl} alt="" className="h-full w-full object-cover" />
+                            </button>
+                          ) : null}
+                          <div className="min-w-0">
+                            <h3 className="text-lg font-semibold leading-snug tracking-tight sm:text-xl">
+                              {note.title}
+                            </h3>
+                            {note.summary && (
+                              <p className="mt-2 max-w-2xl border-l-2 border-primary/20 pl-3 text-sm leading-relaxed text-muted-foreground">
+                                {note.summary}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:flex-col sm:items-end">
+                          <UiBadge variant="outline" className="font-normal">
+                            {patchNoteCategoryLabel(note.category, t)}
+                          </UiBadge>
+                          <PatchNoteBadge type={note.change_type} />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            onClick={() => void openExternalUrl(ytSearch)}
+                          >
+                            <Youtube className="h-4 w-4 shrink-0" aria-hidden />
+                            {t("patchView.searchOnYoutube")}
+                          </Button>
+                        </div>
+                      </div>
+                      <SkinSpotlightEmbed
+                        feed={skinYoutubeFeed}
+                        noteTitle={note.title}
+                        champions={championList}
+                        searchUrl={ytSearch}
+                        searchLabel={t("patchView.searchOnYoutube")}
+                      />
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={note.id}
+                    className="group px-5 py-8 transition-colors hover:bg-muted/20 sm:px-8"
+                  >
+                    <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex min-w-0 gap-4">
+                        <PatchNoteLeadIcon
+                          note={note}
+                          iconUrl={resolvePatchNoteLeadIconUrl(note, championList, itemList, runeList)}
+                        />
+                        <div className="min-w-0">
+                          <h3 className="text-lg font-semibold leading-snug tracking-tight sm:text-xl">
+                            {note.title}
+                          </h3>
+                          {note.summary && (
+                            <p className="mt-2 max-w-2xl border-l-2 border-primary/20 pl-3 text-sm leading-relaxed text-muted-foreground">
+                              {note.summary}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:flex-col sm:items-end">
+                        {categoryFilter === "All" && (
+                          <UiBadge variant="outline" className="font-normal">
+                            {patchNoteCategoryLabel(note.category, t)}
+                          </UiBadge>
+                        )}
+                        <PatchNoteBadge type={note.change_type} />
+                      </div>
+                    </div>
+                    <div className="ml-0 space-y-4 border-l-2 border-border/60 pl-4 sm:ml-2 sm:pl-5">
+                      {Array.isArray(note.details) && note.details.map((block, i) => (
+                        <div key={i}>
+                          {block.title && (
+                            <div className="mb-2 flex items-center gap-2">
+                              {block.icon_url && (
+                                <img src={cleanUrl(block.icon_url)} className="h-6 w-6 rounded bg-muted" alt="" />
+                              )}
+                              <h4 className="text-sm font-semibold text-foreground">
+                                {block.title === WIKI_AUGMENT_DETAIL_TITLE
+                                  ? t("patchView.wikiAugmentWikiHeading")
+                                  : block.title}
+                              </h4>
+                            </div>
+                          )}
+                          <ul className="space-y-2">
+                            {Array.isArray(block.changes) && block.changes.map((change, j) => {
+                              const lower = change.toLowerCase();
+                              const isNew = lower.includes("новое") || lower.includes("new");
+                              const isRemoved = lower.includes("удалено") || lower.includes("removed");
+                              const liClasses = cn(
+                                "rounded-lg px-2.5 py-1.5 text-sm leading-relaxed text-foreground",
+                                isNew && "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100",
+                                isRemoved && "bg-red-50 text-red-900 dark:bg-red-950/40 dark:text-red-100",
+                              );
+                              return (
+                                <li key={j} className={liClasses}>
+                                  <span
+                                    dangerouslySetInnerHTML={{
+                                      __html: highlightSpecialTags(
+                                        change
+                                          .replace(/(\d+(\.\d+)?)/g, '<span class="font-bold">$1</span>')
+                                          .replace(/⇒/g, '<span class="text-muted-foreground mx-1">→</span>')
+                                      ),
+                                    }}
+                                  />
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      </article>
+      {lightboxUrl ? (
+        <div
+          className="fixed inset-0 z-100 flex items-center justify-center bg-black/85 p-4"
+          role="presentation"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="fixed right-4 top-4 z-110 h-10 w-10 rounded-full shadow-lg"
+            aria-label={t("patchView.closeImage")}
+            onClick={(e) => {
+              e.stopPropagation();
+              setLightboxUrl(null);
+            }}
+          >
+            <X className="h-5 w-5" aria-hidden />
+          </Button>
+          <img
+            src={lightboxUrl}
+            alt=""
+            className="max-h-[90vh] w-auto max-w-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PatchNoteBadge({ type }: { type: string }) {
+  const { t } = useTranslation();
+  const map: Record<string, NonNullable<ComponentProps<typeof UiBadge>["variant"]>> = {
+    Buff: "success",
+    Nerf: "destructive",
+    Adjusted: "warning",
+    New: "default",
+    Removed: "outline",
+    Fix: "secondary",
+    None: "outline",
+  };
+  const labels: Record<string, string> = {
+    Removed: t("badge.Removed"),
+    New: t("badge.New"),
+  };
+  const variant = map[type] ?? "secondary";
+  if (type === "None") return null;
+  return <UiBadge variant={variant}>{labels[type] ?? type}</UiBadge>;
 }
 
 // Helper components (ChampionSelect, ChampionIcon, EmptyState, Badge, etc.)
 function ChampionSelect({ items, selected, onSelect }: { items: ChampionListItem[], selected: ChampionListItem | null, onSelect: (i: ChampionListItem) => void }) {
-    const [query, setQuery] = useState("");
-    const [isOpen, setIsOpen] = useState(false);
-    const q = query.toLowerCase();
-    const filtered = items
-      .filter(i =>
-        i.name.toLowerCase().includes(q) || i.name_en.toLowerCase().includes(q)
-      )
-      .sort((a, b) => {
-        // приоритет: точное совпадение ru, en, затем startsWith, затем contains
-        const ar = a.name.toLowerCase();
-        const ae = a.name_en.toLowerCase();
-        const br = b.name.toLowerCase();
-        const be = b.name_en.toLowerCase();
-        const score = (name: string, nameEn: string) => {
-          if (!q) return 0;
-          if (name === q || nameEn === q) return 0;
-          if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
-          return 2;
-        };
-        return score(ar, ae) - score(br, be);
-      });
-    const ref = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => { if (ref.current && !ref.current.contains(event.target as Node)) setIsOpen(false); };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [ref]);
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const q = query.toLowerCase();
+  const filtered = items
+    .filter(i =>
+      i.name.toLowerCase().includes(q) || i.name_en.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      const ar = a.name.toLowerCase();
+      const ae = a.name_en.toLowerCase();
+      const br = b.name.toLowerCase();
+      const be = b.name_en.toLowerCase();
+      const score = (name: string, nameEn: string) => {
+        if (!q) return 0;
+        if (name === q || nameEn === q) return 0;
+        if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
+        return 2;
+      };
+      return score(ar, ae) - score(br, be);
+    });
 
-    return (
-        <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-600 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 dark:text-slate-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
-                {selected ? (
-                    <div className="flex items-center gap-3 flex-1">
-                        <img src={selected.icon_url} className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700" />
-                        <span className="font-bold text-slate-700 dark:text-slate-50">{selected.name}</span>
-                    </div>
-                ) : (
-                    <input type="text" placeholder="Выберите чемпиона..." className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500" value={query} onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }} onClick={(e) => e.stopPropagation()} />
-                )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-400 transition-transform", isOpen && "rotate-180")} />
-            </div>
-            {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
-                    <input type="text" placeholder="Поиск..." className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
-                    {filtered.length === 0 ? <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div> : filtered.map((item, idx) => (
-                        <div key={`${item.name}-${item.name_en}-${idx}`} onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
-                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-800" loading="lazy" />
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium text-slate-700 dark:text-slate-50">{item.name}</span>
-                              {item.name_en !== item.name && (
-                                <span className="text-[11px] text-slate-400 dark:text-slate-400">{item.name_en}</span>
-                              )}
-                            </div>
-                            {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 ml-auto" />}
-                        </div>
-                    ))}
-                </div>
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-auto min-h-11 w-full max-w-lg justify-between px-3 py-2 font-normal"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            {selected ? (
+              <>
+                <img src={cleanUrl(selected.icon_url)} className="h-6 w-6 shrink-0 rounded-full border border-border" alt="" />
+                <span className="truncate font-semibold text-foreground">{selected.name}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{t("select.pickChampion")}</span>
             )}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-0" align="start">
+        <div className="flex flex-col">
+          <div className="border-b p-2">
+            <Input
+              placeholder={t("select.search")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-9"
+            />
+          </div>
+          <ScrollArea className="h-72">
+            <div className="flex flex-col gap-0.5 p-1">
+              {filtered.length === 0 ? (
+                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+              ) : (
+                filtered.map((item, idx) => (
+                  <Button
+                    key={`${item.name}-${item.name_en}-${idx}`}
+                    type="button"
+                    variant="ghost"
+                    className="h-auto w-full justify-start gap-3 px-2 py-2"
+                    onClick={() => {
+                      onSelect(item);
+                      setOpen(false);
+                      setQuery("");
+                    }}
+                  >
+                    <img src={cleanUrl(item.icon_url)} className="h-8 w-8 shrink-0 rounded bg-muted" loading="lazy" alt="" />
+                    <div className="flex min-w-0 flex-1 flex-col items-start">
+                      <span className="text-sm font-medium text-foreground">{item.name}</span>
+                      {item.name_en !== item.name && (
+                        <span className="text-[11px] text-muted-foreground">{item.name_en}</span>
+                      )}
+                    </div>
+                    {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                  </Button>
+                ))
+              )}
+            </div>
+          </ScrollArea>
         </div>
-    );
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], selected: RuneListItem | null, onSelect: (i: RuneListItem) => void }) {
-    const [query, setQuery] = useState("");
-    const [isOpen, setIsOpen] = useState(false);
-    const ref = useRef<HTMLDivElement>(null);
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const q = query.toLowerCase();
+  const filtered = items
+    .filter(i =>
+      i.name.toLowerCase().includes(q) || i.nameEn.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      const ar = a.name.toLowerCase();
+      const ae = a.nameEn.toLowerCase();
+      const br = b.name.toLowerCase();
+      const be = b.nameEn.toLowerCase();
+      const score = (name: string, nameEn: string) => {
+        if (!q) return 0;
+        if (name === q || nameEn === q) return 0;
+        if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
+        return 2;
+      };
+      return score(ar, ae) - score(br, be);
+    });
 
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => { if (ref.current && !ref.current.contains(event.target as Node)) setIsOpen(false); };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [ref]);
+  const runeImgOnError = (item: RuneListItem) => (e: SyntheticEvent<HTMLImageElement>) => {
+    if (item.key && item.style) {
+      invoke<string | null>("get_fallback_rune_icon", {
+        styleKey: item.style,
+        runeKey: item.key
+      }).then(fallback => {
+        if (fallback && e.currentTarget) {
+          const cleaned = cleanUrl(fallback);
+          if (cleaned) e.currentTarget.src = cleaned;
+        }
+      }).catch(() => { });
+    }
+  };
 
-    const q = query.toLowerCase();
-    const filtered = items
-      .filter(i =>
-        i.name.toLowerCase().includes(q) || i.nameEn.toLowerCase().includes(q)
-      )
-      .sort((a, b) => {
-        const ar = a.name.toLowerCase();
-        const ae = a.nameEn.toLowerCase();
-        const br = b.name.toLowerCase();
-        const be = b.nameEn.toLowerCase();
-        const score = (name: string, nameEn: string) => {
-          if (!q) return 0;
-          if (name === q || nameEn === q) return 0;
-          if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
-          return 2;
-        };
-        return score(ar, ae) - score(br, be);
-      });
-
-    return (
-        <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-600 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 dark:text-slate-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
-                {selected ? (
-                    <div className="flex items-center gap-3 flex-1">
-                        <img 
-                            src={cleanUrl(selected.icon_url)} 
-                            className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 object-cover flex-shrink-0" 
-                            alt={selected.name}
-                            onError={(e) => {
-                                // Fallback на архивную иконку при ошибке
-                                if (selected.key && selected.style) {
-                                    invoke<string | null>("get_fallback_rune_icon", { 
-                                        styleKey: selected.style, 
-                                        runeKey: selected.key 
-                                    }).then(fallback => {
-                                        if (fallback && e.currentTarget) {
-                                            const cleaned = cleanUrl(fallback);
-                                            if (cleaned) {
-                                                e.currentTarget.src = cleaned;
-                                            }
-                                        }
-                                    }).catch(() => {});
-                                }
-                            }}
-                        />
-                        <span className="font-bold text-slate-700 dark:text-slate-50">{selected.name}</span>
-                    </div>
-                ) : (
-                    <input
-                      type="text"
-                      placeholder="Выберите руну..."
-                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                      value={query}
-                      onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-400 transition-transform", isOpen && "rotate-180")} />
-            </div>
-            {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
-                    <input
-                      type="text"
-                      placeholder="Поиск (ru/en)..."
-                      className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      autoFocus
-                    />
-                    {filtered.length === 0 ? (
-                      <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div>
-                    ) : (
-                      filtered.map(item => (
-                        <div
-                          key={item.id}
-                          onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
-                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors"
-                        >
-                            {/* Скругленная мини-иконка */}
-                            <img 
-                              src={cleanUrl(item.icon_url)} 
-                              className="w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 object-cover flex-shrink-0" 
-                              alt={item.name}
-                              loading="lazy"
-                              onError={(e) => {
-                                // Fallback на архивную иконку при ошибке
-                                if (item.key && item.style) {
-                                    invoke<string | null>("get_fallback_rune_icon", { 
-                                        styleKey: item.style, 
-                                        runeKey: item.key 
-                                    }).then(fallback => {
-                                        if (fallback && e.currentTarget) {
-                                            const cleaned = cleanUrl(fallback);
-                                            if (cleaned) {
-                                                e.currentTarget.src = cleaned;
-                                            }
-                                        }
-                                    }).catch(() => {});
-                                }
-                              }}
-                            />
-                            <div className="flex flex-col flex-1 min-w-0">
-                              <span className="text-sm font-medium text-slate-700 dark:text-slate-50">{item.name}</span>
-                              {item.nameEn !== item.name && (
-                                <span className="text-[11px] text-slate-400 dark:text-slate-400">{item.nameEn}</span>
-                              )}
-                            </div>
-                            {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 ml-auto flex-shrink-0" />}
-                        </div>
-                      ))
-                    )}
-                </div>
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-auto min-h-11 w-full max-w-lg justify-between px-3 py-2 font-normal"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            {selected ? (
+              <>
+                <img
+                  src={cleanUrl(selected.icon_url)}
+                  className="h-6 w-6 shrink-0 rounded-full border border-border bg-muted object-cover"
+                  alt={selected.name}
+                  onError={runeImgOnError(selected)}
+                />
+                <span className="truncate font-semibold text-foreground">{selected.name}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{t("select.pickRune")}</span>
             )}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-0" align="start">
+        <div className="flex flex-col">
+          <div className="border-b p-2">
+            <Input
+              placeholder={t("select.searchRuneItem")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-9"
+            />
+          </div>
+          <ScrollArea className="h-72">
+            <div className="flex flex-col gap-0.5 p-1">
+              {filtered.length === 0 ? (
+                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+              ) : (
+                filtered.map((item) => (
+                  <Button
+                    key={item.id}
+                    type="button"
+                    variant="ghost"
+                    className="h-auto w-full justify-start gap-3 px-2 py-2"
+                    onClick={() => {
+                      onSelect(item);
+                      setOpen(false);
+                      setQuery("");
+                    }}
+                  >
+                    <img
+                      src={cleanUrl(item.icon_url)}
+                      className="h-8 w-8 shrink-0 rounded-full border border-border bg-muted object-cover"
+                      alt={item.name}
+                      loading="lazy"
+                      onError={runeImgOnError(item)}
+                    />
+                    <div className="flex min-w-0 flex-1 flex-col items-start">
+                      <span className="text-sm font-medium text-foreground">{item.name}</span>
+                      {item.nameEn !== item.name && (
+                        <span className="text-[11px] text-muted-foreground">{item.nameEn}</span>
+                      )}
+                    </div>
+                    {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                  </Button>
+                ))
+              )}
+            </div>
+          </ScrollArea>
         </div>
-    );
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function ItemSelect({ items, selected, onSelect }: { items: ItemListItem[], selected: ItemListItem | null, onSelect: (i: ItemListItem) => void }) {
-    const [query, setQuery] = useState("");
-    const [isOpen, setIsOpen] = useState(false);
-    const ref = useRef<HTMLDivElement>(null);
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const q = query.toLowerCase();
+  const filtered = items
+    .filter(i =>
+      i.name.toLowerCase().includes(q) || i.nameEn.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      const ar = a.name.toLowerCase();
+      const ae = a.nameEn.toLowerCase();
+      const br = b.name.toLowerCase();
+      const be = b.nameEn.toLowerCase();
+      const score = (name: string, nameEn: string) => {
+        if (!q) return 0;
+        if (name === q || nameEn === q) return 0;
+        if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
+        return 2;
+      };
+      return score(ar, ae) - score(br, be);
+    });
 
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => { if (ref.current && !ref.current.contains(event.target as Node)) setIsOpen(false); };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [ref]);
-
-    const q = query.toLowerCase();
-    const filtered = items
-      .filter(i =>
-        i.name.toLowerCase().includes(q) || i.nameEn.toLowerCase().includes(q)
-      )
-      .sort((a, b) => {
-        const ar = a.name.toLowerCase();
-        const ae = a.nameEn.toLowerCase();
-        const br = b.name.toLowerCase();
-        const be = b.nameEn.toLowerCase();
-        const score = (name: string, nameEn: string) => {
-          if (!q) return 0;
-          if (name === q || nameEn === q) return 0;
-          if (name.startsWith(q) || nameEn.startsWith(q)) return 1;
-          return 2;
-        };
-        return score(ar, ae) - score(br, be);
-      });
-
-    return (
-        <div ref={ref} className="relative max-w-lg w-full">
-            <div className="flex items-center gap-3 w-full px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 shadow-sm cursor-pointer hover:border-blue-300 dark:hover:border-blue-600 transition-all group" onClick={() => setIsOpen(!isOpen)}>
-                <Search className="w-4 h-4 text-slate-400 dark:text-slate-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
-                {selected ? (
-                    <div className="flex items-center gap-3 flex-1">
-                        <img src={cleanUrl(selected.icon_url)} className="w-6 h-6 rounded-full border border-slate-100 dark:border-slate-700" />
-                        <span className="font-bold text-slate-700 dark:text-slate-50">{selected.name}</span>
-                    </div>
-                ) : (
-                    <input
-                      type="text"
-                      placeholder="Выберите предмет..."
-                      className="flex-1 bg-transparent outline-none text-sm cursor-pointer text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                      value={query}
-                      onChange={(e) => { setQuery(e.target.value); setIsOpen(true); }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                )}
-                <ChevronDown className={cn("w-4 h-4 text-slate-400 dark:text-slate-400 transition-transform", isOpen && "rotate-180")} />
-            </div>
-            {isOpen && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 p-1 animate-in slide-in-from-top-2 duration-200">
-                    <input
-                      type="text"
-                      placeholder="Поиск (ru/en)..."
-                      className="w-full px-3 py-2 border-b border-slate-100 dark:border-slate-700 outline-none text-sm mb-1 sticky top-0 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      autoFocus
-                    />
-                    {filtered.length === 0 ? (
-                      <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">Нет совпадений</div>
-                    ) : (
-                      filtered.map(item => (
-                        <div
-                          key={item.id}
-                          onClick={() => { onSelect(item); setIsOpen(false); setQuery(""); }}
-                          className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-blue-50 dark:hover:bg-slate-800 cursor-pointer transition-colors"
-                        >
-                            <img src={cleanUrl(item.icon_url)} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-800" loading="lazy" />
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium text-slate-700 dark:text-slate-50">{item.name}</span>
-                              {item.nameEn !== item.name && (
-                                <span className="text-[11px] text-slate-400 dark:text-slate-400">{item.nameEn}</span>
-                              )}
-                            </div>
-                            {selected?.name === item.name && <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 ml-auto" />}
-                        </div>
-                      ))
-                    )}
-                </div>
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-auto min-h-11 w-full max-w-lg justify-between px-3 py-2 font-normal"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            {selected ? (
+              <>
+                <img src={cleanUrl(selected.icon_url)} className="h-6 w-6 shrink-0 rounded-full border border-border" alt="" />
+                <span className="truncate font-semibold text-foreground">{selected.name}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{t("select.pickItem")}</span>
             )}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-0" align="start">
+        <div className="flex flex-col">
+          <div className="border-b p-2">
+            <Input
+              placeholder={t("select.searchRuneItem")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-9"
+            />
+          </div>
+          <ScrollArea className="h-72">
+            <div className="flex flex-col gap-0.5 p-1">
+              {filtered.length === 0 ? (
+                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+              ) : (
+                filtered.map((item) => (
+                  <Button
+                    key={item.id}
+                    type="button"
+                    variant="ghost"
+                    className="h-auto w-full justify-start gap-3 px-2 py-2"
+                    onClick={() => {
+                      onSelect(item);
+                      setOpen(false);
+                      setQuery("");
+                    }}
+                  >
+                    <img src={cleanUrl(item.icon_url)} className="h-8 w-8 shrink-0 rounded bg-muted" loading="lazy" alt="" />
+                    <div className="flex min-w-0 flex-1 flex-col items-start">
+                      <span className="text-sm font-medium text-foreground">{item.name}</span>
+                      {item.nameEn !== item.name && (
+                        <span className="text-[11px] text-muted-foreground">{item.nameEn}</span>
+                      )}
+                    </div>
+                    {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                  </Button>
+                ))
+              )}
+            </div>
+          </ScrollArea>
         </div>
-    );
+      </PopoverContent>
+    </Popover>
+  );
 }
 
-function ChampionIcon({ url, name, size = "md" }: { url?: string, name: string, size?: "sm" | "md" | "lg" }) {
+function ChampionIcon({
+  url,
+  candidates,
+  name,
+  size = "md",
+}: {
+  url?: string;
+  candidates?: string[];
+  name: string;
+  size?: "sm" | "md" | "lg";
+}) {
   const sizes = { sm: "w-8 h-8", md: "w-12 h-12", lg: "w-16 h-16" };
-  if (url) return <img src={cleanUrl(url)} alt={name} className={cn(sizes[size], "rounded-full border border-slate-200 shadow-sm object-cover bg-slate-100")} />;
-  return <div className={cn(sizes[size], "rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-400 border border-slate-200")}>{name.slice(0, 2)}</div>;
-}
-
-function MetaChangesView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
-  const [apiData, setApiData] = useState<MetaAnalysisDiff[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [useApi, setUseApi] = useState(false);
-  const location = useLocation();
-  
-  useEffect(() => {
-    const loadApiData = async () => {
-      setLoading(true);
-      try {
-        const patchesList = await invoke<string[]>("get_available_patches");
-        console.log("[MetaChangesView] Available patches:", patchesList);
-        if (patchesList.length >= 2) {
-          const currentPatch = patchesList[0];
-          const previousPatch = patchesList[1];
-          console.log("[MetaChangesView] Comparing:", { from: previousPatch, to: currentPatch });
-          
-          const metaChanges = await invoke<Array<{
-            champion_id: string;
-            win_rate_diff: number;
-            pick_rate_diff: number;
-            ban_rate_diff: number;
-          }>>("get_meta_changes_from_api", {
-            fromPatch: previousPatch,
-            toPatch: currentPatch,
-            region: "ru",
-            tier: null
-          });
-          
-          console.log("[MetaChangesView] Meta changes received:", metaChanges);
-          console.log("[MetaChangesView] First change sample:", metaChanges[0]);
-          
-          if (metaChanges && metaChanges.length > 0) {
-            const champions = await invoke<ChampionListItem[]>("get_all_champions");
-            const championMap = new Map(champions.map(c => [c.name_en.toLowerCase(), c]));
-            
-            const transformed = metaChanges.map(change => {
-              const champion = championMap.get(change.champion_id.toLowerCase());
-              return {
-                champion_name: champion?.name || change.champion_id,
-                role: "ALL",
-                win_rate_diff: change.win_rate_diff,
-                pick_rate_diff: change.pick_rate_diff,
-                predicted_change: null,
-                champion_image_url: champion?.icon_url
-              } as MetaAnalysisDiff;
-            });
-            
-            setApiData(transformed);
-            setUseApi(true);
-          }
-        }
-      } catch (error: any) {
-        console.error("Failed to load API data:", error);
-        setUseApi(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    loadApiData();
-  }, [location.pathname]);
-  
-  const displayData = useApi ? apiData : diffs;
-  
-  if (loading) {
-    return <EmptyState message="Загрузка данных статистики..." />;
+  const raw = [...(candidates ?? []), url].filter(
+    (x): x is string => typeof x === "string" && x.length > 0,
+  );
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const x of raw) {
+    if (seen.has(x)) continue;
+    seen.add(x);
+    merged.push(x);
   }
-  
-  if (displayData.length === 0) return <EmptyState message="Нет данных статистики." />;
-  
-  return (
-    <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-      <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">Сдвиги Меты</h2>
-      <div className="grid gap-3">
-        {displayData.map((diff, idx) => (
-          <div
-            key={idx}
-            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 flex items-center justify-between shadow-sm hover:border-blue-200 dark:hover:border-slate-500 transition-colors text-slate-900 dark:text-slate-50"
-          >
-            <div className="flex items-center gap-4">
-               <ChampionIcon url={cleanUrl(diff.champion_image_url)} name={diff.champion_name} />
-               <div>
-                 <div className="font-bold text-slate-900 dark:text-slate-50">{diff.champion_name}</div>
-                 <div className="text-xs text-slate-500 dark:text-slate-400 uppercase font-semibold">{diff.role}</div>
-               </div>
-            </div>
-            <div className="flex gap-8 text-right items-center">
-                <div className={cn("px-2 py-1 rounded text-xs font-bold flex items-center gap-1", diff.win_rate_diff > 0 ? "bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400" : "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400")}>
-                    {diff.win_rate_diff > 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />} {Math.abs(diff.win_rate_diff)}%
-                </div>
-               <Stat val={diff.win_rate_diff} label="Win Rate" />
-               <Stat val={diff.pick_rate_diff} label="Pick Rate" />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PredictionsView({ diffs }: { diffs: MetaAnalysisDiff[] }) {
-  const [apiData, setApiData] = useState<MetaAnalysisDiff[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [useApi, setUseApi] = useState(false);
-  const location = useLocation();
-  
-  useEffect(() => {
-    const loadApiData = async () => {
-      setLoading(true);
+  const [idx, setIdx] = useState(0);
+  const cur = idx < merged.length ? merged[idx] : undefined;
+  if (cur) {
+    const t = cur.trim();
+    let src = cleanUrl(t) ?? t;
+    if (
+      isTauri() &&
+      !t.startsWith("http") &&
+      !t.startsWith("data:") &&
+      !t.startsWith("blob:")
+    ) {
       try {
-        const patchesList = await invoke<string[]>("get_available_patches");
-        console.log("[PredictionsView] Available patches:", patchesList);
-        if (patchesList.length >= 2) {
-          const currentPatch = patchesList[0];
-          const previousPatch = patchesList[1];
-          console.log("[PredictionsView] Comparing:", { from: previousPatch, to: currentPatch });
-          
-          const metaChanges = await invoke<Array<{
-            champion_id: string;
-            win_rate_diff: number;
-            pick_rate_diff: number;
-            ban_rate_diff: number;
-          }>>("get_meta_changes_from_api", {
-            fromPatch: previousPatch,
-            toPatch: currentPatch,
-            region: "ru",
-            tier: null
-          });
-          
-          console.log("[PredictionsView] Meta changes received:", metaChanges);
-          console.log("[PredictionsView] First change sample:", metaChanges[0]);
-          
-          if (metaChanges && metaChanges.length > 0) {
-            const champions = await invoke<ChampionListItem[]>("get_all_champions");
-            // Создаем маппинг: champion_id (числовой key) -> champion data
-            const championMapByKey = new Map(champions.map(c => [c.key, c]));
-            // Также маппинг по строковому ID (на случай если champion_id уже строковый)
-            const championMapById = new Map(champions.map(c => [c.id.toLowerCase(), c]));
-            
-            const transformed = metaChanges.map(change => {
-              // Пробуем найти по числовому key или строковому id
-              const champion = championMapByKey.get(change.champion_id) || 
-                              championMapById.get(change.champion_id.toLowerCase());
-              return {
-                champion_name: champion?.name || change.champion_id,
-                role: "ALL",
-                win_rate_diff: change.win_rate_diff,
-                pick_rate_diff: change.pick_rate_diff,
-                predicted_change: null,
-                champion_image_url: champion?.icon_url
-              } as MetaAnalysisDiff;
-            });
-            
-            setApiData(transformed);
-            setUseApi(true);
-          }
-        }
-      } catch (error: any) {
-        console.error("Failed to load API data:", error);
-        setUseApi(false);
-      } finally {
-        setLoading(false);
+        src = convertFileSrc(t);
+      } catch {
+        /* keep src */
       }
-    };
-    
-    loadApiData();
-  }, [location.pathname]);
-  
-  const displayData = useApi ? apiData : diffs;
-  const predicted = displayData.filter(d => d.predicted_change);
-  
-  if (loading) {
-    return <EmptyState message="Загрузка данных статистики..." />;
+    }
+    return (
+      <img
+        src={src}
+        alt={name}
+        className={cn(sizes[size], "rounded-full border border-border bg-muted object-cover shadow-sm")}
+        onError={() => setIdx(i => i + 1)}
+      />
+    );
   }
-  
-  if (predicted.length === 0) return <EmptyState message="Нет прогнозов." />;
-  
   return (
-    <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-      <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-50">Прогноз vs Реальность</h2>
-      <div className="grid md:grid-cols-2 gap-4">
-        {predicted.map((item, idx) => (
-          <div key={idx} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-5 rounded-xl shadow-sm relative overflow-hidden hover:shadow-md transition-shadow">
-             <div className={cn("absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-lg border-l border-b border-slate-100 dark:border-slate-700", item.predicted_change === "Buff" ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400")}>
-               {item.predicted_change?.toUpperCase()}
-             </div>
-             <div className="flex items-center gap-3 mb-3">
-                <ChampionIcon url={cleanUrl(item.champion_image_url)} name={item.champion_name} />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-50">{item.champion_name}</h3>
-             </div>
-             <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">{item.predicted_change === "Buff" ? "Ожидалось усиление" : "Ожидалось ослабление"}</div>
-             <div className="flex items-center justify-between text-sm bg-white dark:bg-slate-800 p-3 rounded border border-slate-100 dark:border-slate-700">
-                <span className="text-slate-500 dark:text-slate-400 font-medium">Результат (Win Rate):</span>
-                <div className="flex items-center gap-2">
-                    {item.win_rate_diff !== 0 && (<span className={cn("font-bold", item.win_rate_diff > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>{item.win_rate_diff > 0 ? "+" : ""}{item.win_rate_diff}%</span>)}
-                    {item.win_rate_diff === 0 && <span className="text-slate-400 dark:text-slate-500 font-bold">Нет данных</span>}
-                </div>
-             </div>
-          </div>
-        ))}
-      </div>
+    <div
+      className={cn(
+        sizes[size],
+        "flex items-center justify-center rounded-full border border-border bg-muted text-xs font-bold text-muted-foreground",
+      )}
+    >
+      {name.slice(0, 2)}
     </div>
   );
 }
 
-function EmptyState({ message = "Выберите патч и нажмите Обновить" }: { message?: string }) {
+function EmptyState({ message }: { message?: string }) {
+  const { t } = useTranslation();
   return (
-    <div className="flex flex-col items-center justify-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl bg-white dark:bg-slate-900">
-      <p>{message}</p>
-    </div>
-  );
-}
-
-function Badge({ type }: { type: string }) {
-  const styles = { Buff: "bg-green-100 text-green-800 border-green-200", Nerf: "bg-red-100 text-red-800 border-red-200", Adjusted: "bg-yellow-100 text-yellow-800 border-yellow-200", New: "bg-blue-100 text-blue-800 border-blue-200", Fix: "bg-slate-100 text-slate-600 border-slate-200", None: "hidden" };
-  // @ts-ignore
-  const style = styles[type] || styles.Adjusted;
-  return <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-bold border", style)}>{type}</span>;
-}
-
-function Stat({ val, label }: { val: number, label: string }) {
-  return (
-    <div className="text-right">
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-bold mb-0.5">{label}</div>
-      <div className={cn("font-mono font-bold", val > 0 ? "text-green-600 dark:text-green-400" : val < 0 ? "text-red-600 dark:text-red-400" : "text-slate-400 dark:text-slate-500")}>{val > 0 ? "+" : ""}{val}%</div>
-    </div>
+    <Card className="border-dashed">
+      <CardContent className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+        <p>{message ?? t("empty.default")}</p>
+      </CardContent>
+    </Card>
   );
 }
 

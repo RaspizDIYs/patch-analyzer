@@ -1,101 +1,114 @@
+@import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-chart-up: hsl(var(--chart-up));
+  --color-chart-down: hsl(var(--chart-down));
+  --color-chart-muted: hsl(var(--chart-muted));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
 
 @layer base {
   :root {
-    /* Светлая тема по умолчанию */
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --background: 250 28% 98%;
+    --foreground: 245 18% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 245 18% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 245 18% 11%;
+    --primary: 262 83% 56%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 250 22% 93%;
+    --secondary-foreground: 245 18% 11%;
+    --muted: 250 18% 94%;
+    --muted-foreground: 245 12% 42%;
+    --accent: 262 42% 93%;
+    --accent-foreground: 262 55% 28%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 250 16% 88%;
+    --input: 250 16% 88%;
+    --ring: 262 83% 56%;
+    --radius: 0.65rem;
+    --chart-up: 152 72% 36%;
+    --chart-down: 0 74% 48%;
+    --chart-muted: 245 12% 48%;
   }
 
-  body.theme-light {
-    --background: 210 40% 98%;
-    --foreground: 222.2 84% 4.9%;
+  .dark {
+    --background: 240 14% 6%;
+    --foreground: 250 18% 96%;
+    --card: 240 12% 9%;
+    --card-foreground: 250 18% 96%;
+    --popover: 240 12% 9%;
+    --popover-foreground: 250 18% 96%;
+    --primary: 262 88% 68%;
+    --primary-foreground: 262 45% 10%;
+    --secondary: 240 10% 15%;
+    --secondary-foreground: 250 18% 96%;
+    --muted: 240 10% 15%;
+    --muted-foreground: 250 12% 58%;
+    --accent: 262 40% 18%;
+    --accent-foreground: 262 100% 92%;
+    --destructive: 0 62% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 10% 17%;
+    --input: 240 10% 17%;
+    --ring: 262 88% 68%;
+    --chart-up: 152 68% 46%;
+    --chart-down: 0 68% 56%;
+    --chart-muted: 250 12% 52%;
   }
 
-  body.theme-dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+  * {
+    @apply border-border;
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
   }
-  .theme {
-    --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+
+  html.reduce-motion *,
+  html.reduce-motion *::before,
+  html.reduce-motion *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
-  .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+
+  html[data-density="compact"] main {
+    @apply py-4 sm:py-5;
   }
-  * {
-    @apply border-border outline-ring/50;
+
+  html[data-density="compact"] header .px-4 {
+    @apply py-2.5;
   }
-  html {
-    @apply font-sans;
+
+  html[data-density="compact"] [data-slot="table-row"],
+  html[data-density="compact"] tr {
+    @apply h-auto [&>td]:py-2 [&>th]:py-2;
   }
 }

@@ -11,18 +11,22 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Patch Analyzer",
         "width": 800,
         "height": 600
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://* http://localhost:* ws://localhost:* wss://localhost:*; img-src 'self' https: http: data: blob: asset: tauri:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://* http://localhost:* ws://localhost:* wss://localhost:*; img-src 'self' https: http: data: blob: asset: tauri:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": [
+      "msi",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -30,7 +34,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [],
+    "resources": [
+      "resources/manifest.json"
+    ],
     "shortDescription": "Patch notes and meta analysis",
     "windows": {
       "certificateThumbprint": null,
@@ -39,4 +45,3 @@
     }
   }
 }
-

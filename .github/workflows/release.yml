@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,14 +33,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         with:
           projectPath: .
           tagName: ${{ github.ref_name }}
-          releaseName: 'LoL Meta Analyzer ${{ github.ref_name }}'
-          releaseBody: 'See the assets to download and install this version.'
+          releaseName: "LoL Meta Analyzer ${{ github.ref_name }}"
+          releaseBody: "See the assets to download and install this version."
           releaseDraft: false
           prerelease: false
-          args: '--bundles msi,nsis'
-
+          args: "--bundles msi,nsis"
