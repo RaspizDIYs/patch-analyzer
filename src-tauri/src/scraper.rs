@@ -232,16 +232,31 @@ impl Scraper {
     }
 
     async fn scrape_riot_patch_notes(&self, version: &str) -> Result<Vec<PatchNoteEntry>> {
-        let url_suffix = format!("patch-{}-notes", version.replace(".", "-"));
-        let url = format!("https://www.leagueoflegends.com/ru-ru/news/game-updates/{}/", url_suffix);
-        
-        let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Ok(vec![]);
+        let slug = version.replace(".", "-");
+        let urls = [
+            format!("https://www.leagueoflegends.com/ru-ru/news/game-updates/league-of-legends-patch-{}-notes/", slug),
+            format!("https://www.leagueoflegends.com/ru-ru/news/game-updates/patch-{}-notes/", slug),
+        ];
+        for url in urls {
+            let Ok(resp) = self.client.get(&url).send().await else {
+                continue;
+            };
+            if !resp.status().is_success() {
+                continue;
+            }
+            let Ok(text) = resp.text().await else {
+                continue;
+            };
+            let notes = self.parse_riot_patch_notes_html(&text);
+            if !notes.is_empty() {
+                return Ok(notes);
+            }
         }
-        
-        let text = resp.text().await?;
-        let document = Html::parse_document(&text);
+        Ok(vec![])
+    }
+
+    fn parse_riot_patch_notes_html(&self, html: &str) -> Vec<PatchNoteEntry> {
+        let document = Html::parse_document(html);
         let mut notes = Vec::new();
         
         let container_sel = Selector::parse("#patch-notes-container").unwrap();
@@ -412,7 +427,7 @@ impl Scraper {
                 }
             }
         }
-        Ok(notes)
+        notes
     }
     
     async fn scrape_leagueofgraphs(&self) -> Result<Vec<ChampionStats>> {

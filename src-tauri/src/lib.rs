@@ -58,6 +58,18 @@ pub struct TierEntry {
     pub icon_url: Option<String>,
 }
 
+#[tauri::command]
+fn analyze_change_trends(texts: Vec<String>) -> Vec<String> {
+    texts
+        .into_iter()
+        .map(|t| match analyze_change_trend_backend(&t) {
+            1 => "up".to_string(),
+            -1 => "down".to_string(),
+            _ => "neutral".to_string(),
+        })
+        .collect()
+}
+
 fn analyze_change_trend_backend(text: &str) -> i32 {
     let lower = text.to_lowercase();
 
@@ -547,20 +559,18 @@ async fn check_supabase_status(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = dotenvy::dotenv();
+
     let db = tokio::runtime::Runtime::new().unwrap().block_on(Database::new()).expect("Failed to init DB");
     let scraper = Scraper::new().expect("Failed to init Scraper");
-    
-    // Инициализация Supabase клиента
-    // Значения по умолчанию встроены в бинарник для production
-    // Можно переопределить через переменные окружения при запуске
-    const DEFAULT_SUPABASE_URL: &str = "https://pnrixpwwjasjizuamuwu.supabase.co";
-    const DEFAULT_SUPABASE_ANON_KEY: &str = "sb_publishable_4QfI6VNJUKkjP5pY-GEhvw_SNbZC1vI";
-    
-    let supabase_url = std::env::var("SUPABASE_URL")
-        .unwrap_or_else(|_| DEFAULT_SUPABASE_URL.to_string());
-    let supabase_key = std::env::var("SUPABASE_ANON_KEY")
-        .unwrap_or_else(|_| DEFAULT_SUPABASE_ANON_KEY.to_string());
-    let supabase = Some(SupabaseClient::new(supabase_url, supabase_key));
+
+    let supabase = match (
+        std::env::var("SUPABASE_URL").ok().filter(|s| !s.is_empty()),
+        std::env::var("SUPABASE_ANON_KEY").ok().filter(|s| !s.is_empty()),
+    ) {
+        (Some(url), Some(key)) => Some(SupabaseClient::new(url, key)),
+        _ => None,
+    };
 
     tauri::Builder::default()
         .setup(|app| {
@@ -609,8 +619,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            analyze_patch, 
-            get_available_patches, 
+            analyze_patch,
+            get_available_patches,
             get_latest_patch_data,
             get_patch_by_version,
             get_champion_history,
@@ -627,7 +637,8 @@ pub fn run() {
             get_fallback_rune_icon,
             get_champion_stats_from_api,
             get_meta_changes_from_api,
-            check_supabase_status
+            check_supabase_status,
+            analyze_change_trends
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

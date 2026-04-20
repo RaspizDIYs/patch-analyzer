@@ -25,3 +25,4 @@ anyhow = "1.0"
 # Включаем serde фичу для chrono
 chrono = { version = "0.4", features = ["serde"] } 
 regex = "1.10"
+dotenvy = "0.15"

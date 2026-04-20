@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
-import { BookOpen, LineChart, TrendingUp, History, ScrollText, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, X, Circle, Settings } from "lucide-react";
+import { BookOpen, LineChart, History, Check, Search, DownloadCloud, ChevronDown, RefreshCw, ArrowUp, ArrowDown, ArrowRightLeft, X, Circle, Settings } from "lucide-react";
 import { cn } from "./lib/utils";
 
 // Helper to clean image URLs on frontend (for existing data)
@@ -31,58 +30,6 @@ function highlightSpecialTags(text: string): string {
   return text;
 }
 
-function analyzeChangeTrend(text: string): "up" | "down" | "neutral" {
-    const lower = text.toLowerCase();
-    
-    // Если явно написано, что что-то УДАЛЕНО / больше не работает — это всегда ослабление
-    if (
-      lower.includes("удалено") ||
-      lower.includes("removed") ||
-      (lower.includes("больше не") && !lower.includes("больше не уменьшается") && !lower.includes("no longer reduced"))
-    ) {
-      return "down";
-    }
-
-    // Check for specific "no longer reduced" pattern (это бафф)
-    if (lower.includes("больше не уменьшается") || lower.includes("no longer reduced")) return "up";
-
-    // Cooldown/Cost/Time context (lower is better)
-    const isInverse = lower.includes("перезарядка") || lower.includes("cooldown") || 
-                      lower.includes("стоимость") || lower.includes("cost") || 
-                      lower.includes("mana") || lower.includes("маны") || 
-                      lower.includes("energy") || lower.includes("энергии") ||
-                      lower.includes("затраты") || lower.includes("время") || lower.includes("time");
-
-    // Split by arrow
-    const parts = text.split(/\s*(?:→|⇒|->)\s*/);
-    if (parts.length === 2) {
-        const parseVal = (str: string) => {
-            // Extract all numbers from the string
-            const nums = (str.match(/[-+]?\d+(?:[.,]\d+)?/g) || [])
-                .map(s => parseFloat(s.replace(',', '.')));
-            
-            if (nums.length === 0) return NaN;
-            
-            // Heuristic: Sum of all numbers usually indicates "total power"
-            return nums.reduce((a, b) => a + b, 0);
-        };
-
-        const from = parseVal(parts[0]);
-        const to = parseVal(parts[1]);
-
-        if (!isNaN(from) && !isNaN(to)) {
-            if (to > from) return isInverse ? "down" : "up";
-            if (to < from) return isInverse ? "up" : "down";
-        }
-    }
-
-    // Keyword matching
-    if (lower.includes("увеличен") || lower.includes("усилен") || lower.includes("increased") || lower.includes("buffed") || lower.includes("new effect") || lower.includes("новый эффект")) return "up";
-    if (lower.includes("уменьшен") || lower.includes("ослаблен") || lower.includes("decreased") || lower.includes("nerfed") || lower.includes("removed") || lower.includes("удалено")) return "down";
-
-    return "neutral";
-}
-
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, error: string }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -101,12 +48,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 interface PatchData { version: string; patch_notes: PatchNoteEntry[]; }
 interface ChangeBlock { title: string | null; icon_url: string | null; changes: string[]; }
 interface PatchNoteEntry { id: string; title: string; image_url?: string; category: string; change_type: string; summary: string; details: ChangeBlock[]; }
-interface MetaAnalysisDiff { champion_name: string; role: string; win_rate_diff: number; pick_rate_diff: number; predicted_change: string | null; champion_image_url?: string; }
 interface ChampionHistoryEntry { patch_version: string; date: string; change: PatchNoteEntry; }
 interface ChampionListItem { name: string; name_en: string; icon_url: string; key: string; id: string; }
 interface RuneListItem { id: string; name: string; nameEn: string; icon_url: string; key?: string; style?: string; }
 interface ItemListItem { id: string; name: string; nameEn: string; icon_url: string; }
-interface LogEntry { level: string; message: string; timestamp: string; }
 interface TierEntry { name: string; category: string; buffs: number; nerfs: number; adjusted: number; icon_url?: string | null; }
 
 function compareVersions(v1: string, v2: string) {
@@ -129,8 +74,6 @@ function App() {
   const [version, setVersion] = useState("15.23"); 
   const [patchesList, setPatchesList] = useState<string[]>([]);
   const [patchData, setPatchData] = useState<PatchData | null>(null);
-  const [diffs, setDiffs] = useState<MetaAnalysisDiff[]>([]);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [patchesStatus, setPatchesStatus] = useState<Record<string, boolean>>({});
   const [newPatches, setNewPatches] = useState<Set<string>>(new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -217,11 +160,6 @@ function App() {
             }
         }
     }).catch(console.error);
-
-    const unlisten = listen<LogEntry>("log_message", (event) => {
-      setLogs(prev => [event.payload, ...prev]);
-    });
-    return () => { unlisten.then(f => f()); };
   }, []);
 
   useEffect(() => { if (version) loadData(version, false); }, [version]);
@@ -229,11 +167,7 @@ function App() {
   async function loadData(ver: string, force: boolean) {
     setLoading(true);
     try {
-        const [diffsResult, patchResult] = await Promise.all([
-            invoke<MetaAnalysisDiff[]>("analyze_patch", { version: ver, force }),
-            invoke<PatchData>("get_patch_by_version", { version: ver })
-        ]);
-        setDiffs(diffsResult);
+        const patchResult = await invoke<PatchData>("get_patch_by_version", { version: ver });
         setPatchData(patchResult);
         if (force) {
             toast.success(`Патч ${ver} обновлен`);
@@ -256,7 +190,7 @@ function App() {
 
   async function handleSyncAll() {
       setSyncing(true);
-      toast.info("Загрузка всех патчей начата (см. логи)...");
+      toast.info("Загрузка всех патчей…");
       try {
           await invoke("sync_patch_history");
           toast.success("Все патчи загружены!");
@@ -284,11 +218,8 @@ function App() {
 
   const navItems = [
     { path: "/", label: "Патч Ноут", icon: BookOpen },
-    { path: "/meta", label: "Изменения Меты", icon: LineChart },
-    { path: "/predictions", label: "Прогнозы", icon: TrendingUp },
     { path: "/tier", label: "Тир-лист", icon: LineChart },
     { path: "/history", label: "История изменений", icon: History },
-    { path: "/logs", label: "Логи", icon: ScrollText },
   ];
 
   const isDark = effectiveTheme === "dark";
@@ -501,11 +432,8 @@ function App() {
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<PatchReleaseView data={patchData} version={version} patchesList={patchesList} onVersionChange={setVersion} loading={loading} patchesStatus={patchesStatus} newPatches={newPatches} />} />
-            <Route path="/meta" element={<MetaChangesView diffs={diffs} />} />
-            <Route path="/predictions" element={<PredictionsView diffs={diffs} />} />
             <Route path="/tier" element={<TierListView />} />
             <Route path="/history" element={<ChampionHistoryView />} />
-            <Route path="/logs" element={<LogsView logs={logs} />} />
           </Routes>
         </ErrorBoundary>
       </main>
