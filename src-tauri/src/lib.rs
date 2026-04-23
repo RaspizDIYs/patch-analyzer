@@ -2,6 +2,7 @@ use tauri::{AppHandle, Manager};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
 use tauri::image::Image;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::db::Database;
 use crate::scraper::Scraper;
@@ -11,6 +12,7 @@ use crate::models::{
 };
 use crate::analyzer::Analyzer;
 use std::collections::{HashSet, HashMap};
+use crate::patch_version::versions_match;
 use serde::Serialize;
 use regex::Regex;
 
@@ -24,11 +26,12 @@ mod youtube_data_api;
 mod wiki_embed;
 mod game_assets;
 mod patch_icons;
+pub mod wiki_augment_bundle;
 
 struct AppState {
-    db: Database,
-    scraper: Scraper,
-    tier_cache: Option<(String, Vec<TierEntry>)>,
+    db: Arc<Database>,
+    scraper: Arc<Scraper>,
+    tier_cache: Mutex<Option<(String, Vec<TierEntry>)>>,
 }
 
 #[derive(Serialize)]
@@ -210,41 +213,79 @@ async fn refresh_augments_catalog_if_needed(
     }
 }
 
+const PATCH_NOT_CACHED: &str = "PATCH_NOT_CACHED";
+
 async fn get_or_fetch_patch(
     version: &str,
     patch_notes_locale: &str,
     app: &AppHandle,
-    state: &AppState,
+    db: &Database,
+    scraper: &Scraper,
     force_refresh: bool,
+    allow_network: bool,
 ) -> Result<PatchData, String> {
-    if !force_refresh {
-        if let Ok(Some(patch)) = state.db.get_patch_resolving(version).await {
-            let stored_loc = patch.patch_notes_locale.as_deref().unwrap_or("ru");
-            if stored_loc == patch_notes_locale && !patch.patch_notes.is_empty() {
-                refresh_augments_catalog_if_needed(&state.scraper, &state.db, false, app).await;
-                return state
-                    .db
-                    .patch_with_wiki_augment_enrichment(patch)
-                    .await
-                    .map_err(|e| e.to_string());
+    if force_refresh {
+        if !allow_network {
+            return Err(PATCH_NOT_CACHED.to_string());
+        }
+    } else {
+        match db.get_patch_resolving(version).await {
+            Ok(Some(patch)) => {
+                let stored_loc = patch.patch_notes_locale.as_deref().unwrap_or("ru");
+                let same_locale = stored_loc == patch_notes_locale;
+                if !patch.patch_notes.is_empty() && (same_locale || !allow_network) {
+                    return db
+                        .patch_with_wiki_augment_enrichment(patch)
+                        .await
+                        .map_err(|e| e.to_string());
+                }
+                if !allow_network {
+                    return db
+                        .patch_with_wiki_augment_enrichment(patch)
+                        .await
+                        .map_err(|e| e.to_string());
+                }
             }
+            Ok(None) => {
+                if !allow_network {
+                    return Err(PATCH_NOT_CACHED.to_string());
+                }
+            }
+            Err(e) => return Err(e.to_string()),
         }
     }
-    log(app, "INFO", &format!("Fetching patch data for {} from web...", version));
-    match state.scraper.fetch_current_meta(version, patch_notes_locale).await {
+    if !allow_network {
+        return Err(PATCH_NOT_CACHED.to_string());
+    }
+    log(
+        app,
+        "INFO",
+        &format!("Fetching patch data for {} from web...", version),
+    );
+    match scraper
+        .fetch_current_meta(version, patch_notes_locale)
+        .await
+    {
         Ok(data) => {
-            let _ = state.db.save_patch(&data).await;
-            refresh_augments_catalog_if_needed(&state.scraper, &state.db, force_refresh, app).await;
-            let data = state
-                .db
+            let _ = db.save_patch(&data).await;
+            refresh_augments_catalog_if_needed(scraper, db, force_refresh, app).await;
+            let data = db
                 .patch_with_wiki_augment_enrichment(data)
                 .await
                 .map_err(|e| e.to_string())?;
-            log(app, "SUCCESS", &format!("Data for {} fetched and saved.", version));
+            log(
+                app,
+                "SUCCESS",
+                &format!("Data for {} fetched and saved.", version),
+            );
             Ok(data)
         }
         Err(e) => {
-            log(app, "ERROR", &format!("Failed to fetch patch {}: {}", version, e));
+            log(
+                app,
+                "ERROR",
+                &format!("Failed to fetch patch {}: {}", version, e),
+            );
             Err(e.to_string())
         }
     }
@@ -254,12 +295,22 @@ async fn get_or_fetch_patch(
 async fn get_patch_by_version(
     version: String,
     patch_notes_locale: String,
+    allow_network: Option<bool>,
     app: AppHandle,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<PatchData, String> {
     let loc = if patch_notes_locale == "en" { "en" } else { "ru" };
-    let state = state.lock().await;
-    get_or_fetch_patch(&version, loc, &app, &state, false).await
+    let allow_network = allow_network.unwrap_or(false);
+    get_or_fetch_patch(
+        &version,
+        loc,
+        &app,
+        state.db.as_ref(),
+        state.scraper.as_ref(),
+        false,
+        allow_network,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -268,17 +319,28 @@ async fn analyze_patch(
     force: bool,
     patch_notes_locale: String,
     app: AppHandle,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<MetaAnalysisDiff>, String> {
     let loc = if patch_notes_locale == "en" { "en" } else { "ru" };
-    let state = state.lock().await;
-    let current = get_or_fetch_patch(&version, loc, &app, &state, force).await?;
+    let current = get_or_fetch_patch(
+        &version,
+        loc,
+        &app,
+        state.db.as_ref(),
+        state.scraper.as_ref(),
+        force,
+        true,
+    )
+    .await?;
     let patches = state
         .db
-        .get_recent_patches(10)
+        .get_patches_newest_versions_first(50)
         .await
         .map_err(|e| e.to_string())?;
-    let previous = patches.iter().find(|p| p.version != version);
+    let current_idx = patches
+        .iter()
+        .position(|p| versions_match(&p.version, &version));
+    let previous = current_idx.and_then(|i| patches.get(i + 1));
 
     if let Some(prev) = previous {
         Ok(Analyzer::compare_patches(&current, prev))
@@ -288,8 +350,7 @@ async fn analyze_patch(
 }
 
 #[tauri::command]
-async fn check_patches_exist(versions: Vec<String>, state: tauri::State<'_, Mutex<AppState>>) -> Result<HashMap<String, bool>, String> {
-    let state = state.lock().await;
+async fn check_patches_exist(versions: Vec<String>, state: tauri::State<'_, AppState>) -> Result<HashMap<String, bool>, String> {
     let mut result = HashMap::new();
     for version in versions {
         let exists = state
@@ -303,8 +364,7 @@ async fn check_patches_exist(versions: Vec<String>, state: tauri::State<'_, Mute
 }
 
 #[tauri::command]
-async fn get_latest_ddragon_version(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<String>, String> {
-    let state = state.lock().await;
+async fn get_latest_ddragon_version(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
     state.scraper.fetch_latest_ddragon_version().await.map_err(|e| e.to_string())
 }
 
@@ -312,10 +372,9 @@ async fn get_latest_ddragon_version(state: tauri::State<'_, Mutex<AppState>>) ->
 async fn check_patch_notes_exists(
     version: String,
     patch_notes_locale: String,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
     let loc = if patch_notes_locale == "en" { "en" } else { "ru" };
-    let state = state.lock().await;
     Ok(state.scraper.check_patch_notes_exists(&version, loc).await)
 }
 
@@ -357,28 +416,42 @@ async fn get_fallback_rune_icon(style_key: String, rune_key: String) -> Result<O
 }
 
 #[tauri::command]
-async fn get_available_patches(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
-    let state = state.lock().await;
+async fn get_available_patches(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     state.scraper.fetch_available_patches().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn get_latest_patch_data(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<PatchData>, String> {
-    let state = state.lock().await;
-    let recent = state.db.get_recent_patches(1).await.unwrap_or_default();
-    if let Some(latest) = recent.first() {
-        Ok(Some(latest.clone()))
-    } else {
-        Ok(None)
-    }
+async fn get_latest_patch_data(state: tauri::State<'_, AppState>) -> Result<Option<PatchData>, String> {
+    let recent = state
+        .db
+        .get_patches_newest_versions_first(1)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(latest) = recent.into_iter().next() else {
+        return Ok(None);
+    };
+    let enriched = state
+        .db
+        .patch_with_wiki_augment_enrichment(latest)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(enriched))
+}
+
+#[tauri::command]
+async fn get_cached_patch_versions(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    state
+        .db
+        .list_cached_patch_versions()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_champion_history(
     champion_name: String,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    let state = state.lock().await;
     state
         .db
         .get_champion_history(&champion_name)
@@ -389,9 +462,8 @@ async fn get_champion_history(
 #[tauri::command]
 async fn get_item_history(
     item_name: String,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    let state = state.lock().await;
     state
         .db
         .get_item_history(&item_name)
@@ -402,9 +474,8 @@ async fn get_item_history(
 #[tauri::command]
 async fn get_rune_history(
     rune_name: String,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    let state = state.lock().await;
     state
         .db
         .get_rune_history(&rune_name)
@@ -413,8 +484,7 @@ async fn get_rune_history(
 }
 
 #[tauri::command]
-async fn get_all_champions(state: tauri::State<'_, Mutex<AppState>>) -> Result<Vec<ChampionListItem>, String> {
-    let state = state.lock().await;
+async fn get_all_champions(state: tauri::State<'_, AppState>) -> Result<Vec<ChampionListItem>, String> {
     if let Ok(rows) = state.db.get_static_catalog_kind("champion").await {
         if !rows.is_empty() {
             return Ok(rows
@@ -464,7 +534,7 @@ async fn get_all_champions(state: tauri::State<'_, Mutex<AppState>>) -> Result<V
 async fn refresh_game_assets(
     app: AppHandle,
     force: Option<bool>,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let force = force.unwrap_or(true);
     let icon_cache = app
@@ -472,25 +542,22 @@ async fn refresh_game_assets(
         .app_data_dir()
         .ok()
         .map(|p| p.join("game_assets_icons"));
-    let state = state.lock().await;
     let cache = icon_cache.as_deref();
-    game_assets::refresh_game_assets(&state.scraper, &state.db, cache, force)
+    game_assets::refresh_game_assets(state.scraper.as_ref(), state.db.as_ref(), cache, force)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn get_game_assets_meta(state: tauri::State<'_, Mutex<AppState>>) -> Result<Option<GameAssetsMeta>, String> {
-    let state = state.lock().await;
+async fn get_game_assets_meta(state: tauri::State<'_, AppState>) -> Result<Option<GameAssetsMeta>, String> {
     state.db.get_game_assets_meta().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_static_catalog_rows(
     kind: String,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<StaticCatalogRow>, String> {
-    let state = state.lock().await;
     state
         .db
         .get_static_catalog_kind(&kind)
@@ -501,9 +568,8 @@ async fn get_static_catalog_rows(
 #[tauri::command]
 async fn get_static_catalog_items_for_maps(
     map_ids: Vec<u32>,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<StaticCatalogRow>, String> {
-    let state = state.lock().await;
     state
         .db
         .filter_static_catalog_items_by_maps(&map_ids)
@@ -513,12 +579,11 @@ async fn get_static_catalog_items_for_maps(
 
 #[tauri::command]
 async fn get_changed_itemsrunes_titles(
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let state = state.lock().await;
     let patches = state
         .db
-        .get_recent_patches(20)
+        .get_patches_newest_versions_first(20)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -536,17 +601,18 @@ async fn get_changed_itemsrunes_titles(
 
 #[tauri::command]
 async fn get_tier_list(
-    state: tauri::State<'_, Mutex<AppState>>,
+    window_size: Option<u32>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TierEntry>, String> {
-    let mut state = state.lock().await;
+    let limit = window_size.unwrap_or(20).clamp(1, 50) as i64;
     let patches = state
         .db
-        .get_recent_patches(20)
+        .get_patches_newest_versions_first(limit)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Строим сигнатуру состояния данных (версии + fetched_at) для кеша
     let mut signature = String::new();
+    signature.push_str(&format!("limit={limit};"));
     for p in &patches {
         signature.push_str(&p.version);
         signature.push('|');
@@ -554,9 +620,12 @@ async fn get_tier_list(
         signature.push(';');
     }
 
-    if let Some((cached_sig, cached_list)) = &state.tier_cache {
-        if *cached_sig == signature {
-            return Ok(cached_list.clone());
+    {
+        let cache = state.tier_cache.lock().await;
+        if let Some((cached_sig, cached_list)) = cache.as_ref() {
+            if *cached_sig == signature {
+                return Ok(cached_list.clone());
+            }
         }
     }
 
@@ -606,7 +675,8 @@ async fn get_tier_list(
             .then_with(|| a.nerfs.cmp(&b.nerfs))
     });
 
-    state.tier_cache = Some((signature, list.clone()));
+    let mut cache = state.tier_cache.lock().await;
+    *cache = Some((signature, list.clone()));
 
     Ok(list)
 }
@@ -615,70 +685,75 @@ async fn get_tier_list(
 async fn sync_patch_history(
     patch_notes_locale: String,
     app: AppHandle,
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let loc = if patch_notes_locale == "en" { "en" } else { "ru" };
     log(&app, "INFO", "Starting full history sync...");
     
-    let patches_list = {
-        let state = state.lock().await;
-        match state.scraper.fetch_available_patches().await {
-             Ok(list) => list,
-             Err(e) => return Err(e.to_string())
-        }
-    };
+    let patches_list = state
+        .scraper
+        .fetch_available_patches()
+        .await
+        .map_err(|e| e.to_string())?;
 
     log(&app, "INFO", &format!("Found {} patches to check.", patches_list.len()));
 
     for version in patches_list {
-        let need_fetch = {
-             let state = state.lock().await;
-             match state.db.get_patch_resolving(&version).await.ok().flatten() {
-                 Some(p) => {
-                     let sl = p.patch_notes_locale.as_deref().unwrap_or("ru");
-                     sl != loc || p.patch_notes.is_empty()
-                 }
-                 None => true,
-             }
+        let need_fetch = match state
+            .db
+            .get_patch(&version)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(p) => {
+                let sl = p.patch_notes_locale.as_deref().unwrap_or("ru");
+                sl != loc || p.patch_notes.is_empty()
+            }
+            None => true,
         };
 
         if need_fetch {
-             log(&app, "INFO", &format!("Downloading missing patch: {} ...", version));
-             let fetch_result = {
-                 let state = state.lock().await;
-                 state.scraper.fetch_current_meta(&version, loc).await
-             };
-             
-             match fetch_result {
-                 Ok(data) => {
-                     let state = state.lock().await;
-                     if let Err(e) = state.db.save_patch(&data).await {
-                         log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
-                     } else {
-                         log(&app, "SUCCESS", &format!("Saved patch {}", version));
-                     }
-                 },
-                 Err(e) => {
-                     log(&app, "ERROR", &format!("Failed to download {}: {}", version, e));
-                 }
-             }
-             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            log(
+                &app,
+                "INFO",
+                &format!("Downloading missing patch: {} ...", version),
+            );
+            let fetch_result = state.scraper.fetch_current_meta(&version, loc).await;
+
+            match fetch_result {
+                Ok(data) => {
+                    if let Err(e) = state.db.save_patch(&data).await {
+                        log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
+                    } else {
+                        log(&app, "SUCCESS", &format!("Saved patch {}", version));
+                    }
+                }
+                Err(e) => {
+                    log(&app, "ERROR", &format!("Failed to download {}: {}", version, e));
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     }
 
-    {
-        let state = state.lock().await;
-        refresh_augments_catalog_if_needed(&state.scraper, &state.db, false, &app).await;
-    }
+    refresh_augments_catalog_if_needed(
+        state.scraper.as_ref(),
+        state.db.as_ref(),
+        false,
+        &app,
+    )
+    .await;
 
     log(&app, "SUCCESS", "History sync completed.");
     Ok(())
 }
 
 #[tauri::command]
-async fn clear_database(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let state = state.lock().await;
+async fn clear_database(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.db.clear_database().await.map_err(|e| e.to_string())?;
+    let mut cache = state.tier_cache.lock().await;
+    *cache = None;
     Ok(())
 }
 
@@ -712,7 +787,7 @@ pub struct SkinSpotlightResolveResult {
 
 #[tauri::command]
 async fn resolve_skin_spotlight_video(
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
     cache_key: String,
     search_query: String,
     channel_id: String,
@@ -732,10 +807,7 @@ async fn resolve_skin_spotlight_video(
         });
     }
 
-    let cached = {
-        let guard = state.lock().await;
-        guard.db.get_skin_spotlight_cached(&ck).await
-    };
+    let cached = state.db.get_skin_spotlight_cached(&ck).await;
     if let Ok(Some((vid, title))) = cached {
         return Ok(SkinSpotlightResolveResult {
             video_id: Some(vid),
@@ -765,8 +837,7 @@ async fn resolve_skin_spotlight_video(
 
     match searched {
         Ok(Some((vid, title))) => {
-            let guard = state.lock().await;
-            let _ = guard
+            let _ = state
                 .db
                 .save_skin_spotlight_cached(&ck, &vid, &title)
                 .await;
@@ -808,10 +879,9 @@ pub struct MayhemAugmentationsPayload {
 
 #[tauri::command]
 async fn get_mayhem_augmentations_page(
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
     locale: String,
 ) -> Result<MayhemAugmentationsPayload, String> {
-    let guard = state.lock().await;
     let key = if locale == "en" {
         db::MAYHEM_AUG_PAGE_KEY_EN
     } else {
@@ -823,7 +893,7 @@ async fn get_mayhem_augmentations_page(
         db::AUGMENTS_CATALOG_KEY_ARAM_MAYHEM_RU
     };
 
-    let page = guard
+    let page = state
         .db
         .get_mayhem_augmentations_page(key)
         .await
@@ -838,7 +908,7 @@ async fn get_mayhem_augmentations_page(
         }
     }
 
-    if let Ok(Some((notes, t))) = guard.db.get_augments_catalog(cat_key).await {
+    if let Ok(Some((notes, t))) = state.db.get_augments_catalog(cat_key).await {
         let entries = db::mayhem_rows_from_patch_notes(&notes);
         if !entries.is_empty() {
             return Ok(MayhemAugmentationsPayload {
@@ -863,11 +933,10 @@ async fn get_mayhem_augmentations_page(
 
 #[tauri::command]
 async fn refresh_mayhem_augmentations_from_wiki(
-    state: tauri::State<'_, Mutex<AppState>>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let guard = state.lock().await;
-    let scraper = &guard.scraper;
-    let db = &guard.db;
+    let scraper = state.scraper.clone();
+    let db = state.db.clone();
     let (en_notes, en_det) = scraper
         .fetch_aram_mayhem_augmentations_bundle_en()
         .await
@@ -891,7 +960,7 @@ async fn refresh_mayhem_augmentations_from_wiki(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let scraper = Scraper::new().expect("Failed to init Scraper");
+    let scraper = Arc::new(Scraper::new().expect("Failed to init Scraper"));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -917,28 +986,29 @@ pub fn run() {
                     }
                 }
             }
-            let db = tokio::runtime::Runtime::new()
-                .expect("runtime")
-                .block_on(Database::open(&db_path))
-                .expect("Failed to init DB");
+            let db = Arc::new(
+                tokio::runtime::Runtime::new()
+                    .expect("runtime")
+                    .block_on(Database::open(&db_path))
+                    .expect("Failed to init DB"),
+            );
 
-            app.manage(Mutex::new(AppState {
-                db,
-                scraper,
-                tier_cache: None,
-            }));
+            app.manage(AppState {
+                db: db.clone(),
+                scraper: scraper.clone(),
+                tier_cache: Mutex::new(None),
+            });
 
-            let ah = app.handle().clone();
+            let db_spawn = db.clone();
+            let scraper_spawn = scraper.clone();
             let icon_cache_dir = app_data.join("game_assets_icons");
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                let st = ah.state::<Mutex<AppState>>();
-                let s = st.lock().await;
-                let _ = game_assets::try_seed_manifest_meta(&s.db).await;
-                if s.db.static_catalog_count().await.unwrap_or(0) == 0 {
+                let _ = game_assets::try_seed_manifest_meta(db_spawn.as_ref()).await;
+                if db_spawn.static_catalog_count().await.unwrap_or(0) == 0 {
                     let _ = game_assets::refresh_game_assets(
-                        &s.scraper,
-                        &s.db,
+                        scraper_spawn.as_ref(),
+                        db_spawn.as_ref(),
                         Some(icon_cache_dir.as_path()),
                         true,
                     )
@@ -988,6 +1058,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             analyze_patch,
             get_available_patches,
+            get_cached_patch_versions,
             get_latest_patch_data,
             get_patch_by_version,
             get_champion_history,
@@ -1010,9 +1081,6 @@ pub fn run() {
             resolve_skin_spotlight_video,
             wiki_embed::wiki_embed_open,
             wiki_embed::wiki_embed_close,
-            wiki_embed::wiki_embed_resize,
-            wiki_embed::wiki_embed_navigate,
-            wiki_embed::wiki_embed_go_back,
             get_mayhem_augmentations_page,
             refresh_mayhem_augmentations_from_wiki,
             refresh_game_assets,

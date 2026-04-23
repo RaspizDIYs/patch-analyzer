@@ -1,14 +1,109 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Patch Analyzer</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
 
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Patch Analyzer</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    #boot-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 50% 30%, #1f1a3a 0%, #0f0d16 58%, #09080f 100%);
+      color: #f5f3ff;
+      transition: opacity 220ms ease;
+    }
+
+    #boot-loader[data-hidden="true"] {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .boot-card {
+      display: grid;
+      justify-items: center;
+      gap: 14px;
+      padding: 24px 28px;
+      border-radius: 18px;
+      background: rgba(29, 23, 56, 0.62);
+      border: 1px solid rgba(167, 139, 250, 0.26);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    .boot-logo {
+      width: 56px;
+      height: 56px;
+      filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.55));
+    }
+
+    .boot-title {
+      margin: 0;
+      font: 600 18px/1.2 Inter, Segoe UI, Arial, sans-serif;
+      letter-spacing: 0.02em;
+    }
+
+    .boot-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .boot-dots span {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: #a78bfa;
+      animation: bootPulse 1s ease-in-out infinite;
+    }
+
+    .boot-dots span:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    .boot-dots span:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes bootPulse {
+
+      0%,
+      80%,
+      100% {
+        transform: translateY(0);
+        opacity: 0.38;
+      }
+
+      40% {
+        transform: translateY(-3px);
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="boot-loader" aria-live="polite" aria-busy="true">
+    <div class="boot-card">
+      <img class="boot-logo" src="/logo.svg" alt="" />
+      <p class="boot-title">Patch Analyzer</p>
+      <div class="boot-dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  </div>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>

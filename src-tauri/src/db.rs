@@ -9,7 +9,10 @@ use crate::models::{
     ChampionStats, ChangeBlock, GameAssetsMeta, IconSourceEntry, MayhemAugmentation, PatchCategory,
     PatchData, PatchNoteEntry, StaticCatalogRow,
 };
-use crate::patch_version::versions_match;
+use crate::patch_version::{
+    cmp_display_patch, display_patch_to_ddragon_major_minor, versions_match,
+    DISPLAY_MAJOR_MAP_TO_DDRAGON_FROM,
+};
 use serde::{Deserialize, Serialize};
 use serde_json;
 
@@ -125,6 +128,34 @@ pub fn normalize_augment_lookup_key(s: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub fn augment_row_matches_icon_url(row: &StaticCatalogRow, image_url: &str) -> bool {
+    if row.kind != "augment" {
+        return false;
+    }
+    let needle = image_url.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    let needle_lc = needle.to_lowercase();
+    let needle_nop = needle_lc.split('?').next().unwrap_or("");
+    for e in &row.icon_sources {
+        let Some(u) = e.url.as_ref() else {
+            continue;
+        };
+        let hay = u.trim().to_lowercase();
+        let hay_nop = hay.split('?').next().unwrap_or("");
+        if needle_nop == hay_nop {
+            return true;
+        }
+        let ns = needle_nop.rsplit('/').next().unwrap_or("");
+        let hs = hay_nop.rsplit('/').next().unwrap_or("");
+        if !ns.is_empty() && ns == hs {
+            return true;
+        }
+    }
+    false
 }
 
 fn wiki_catalog_effect_text(entry: &PatchNoteEntry) -> String {
@@ -299,6 +330,32 @@ fn deserialize_stored_json(data: &str) -> Option<PatchJsonContent> {
     None
 }
 
+fn patch_data_from_stored_row(ver: String, data: &str, date_str: &str) -> Result<PatchData> {
+    let content: PatchJsonContent = match serde_json::from_str(data) {
+        Ok(c) => c,
+        Err(_) => {
+            let champions: Vec<ChampionStats> = serde_json::from_str(data).unwrap_or_default();
+            PatchJsonContent {
+                champions,
+                patch_notes: vec![],
+                banner_url: None,
+                patch_notes_locale: None,
+            }
+        }
+    };
+    let date = chrono::DateTime::parse_from_rfc3339(date_str)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    Ok(PatchData {
+        version: ver,
+        fetched_at: date,
+        champions: content.champions,
+        patch_notes: content.patch_notes,
+        banner_url: content.banner_url,
+        patch_notes_locale: content.patch_notes_locale,
+    })
+}
+
 impl Database {
     pub async fn new() -> Result<Self> {
         Self::open(Path::new("patches.db")).await
@@ -402,24 +459,72 @@ impl Database {
         Ok(Self { pool })
     }
 
-    async fn fetch_recent_rows(&self, limit: i64) -> Result<Vec<(String, String, String)>> {
-        sqlx::query_as::<_, (String, String, String)>(
-            "SELECT version, data_json, fetched_at FROM patches ORDER BY fetched_at DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
+    fn prefers_modern_display_patch(version: &str) -> bool {
+        version
+            .split('.')
+            .next()
+            .and_then(|m| m.parse::<i32>().ok())
+            .map(|major| major >= DISPLAY_MAJOR_MAP_TO_DDRAGON_FROM)
+            .unwrap_or(false)
+    }
+
+    fn is_better_equivalent_patch_row(
+        candidate: &(String, String, String),
+        current: &(String, String, String),
+    ) -> bool {
+        let candidate_modern = Self::prefers_modern_display_patch(&candidate.0);
+        let current_modern = Self::prefers_modern_display_patch(&current.0);
+        if candidate_modern != current_modern {
+            return candidate_modern;
+        }
+        if candidate.2 != current.2 {
+            return candidate.2 > current.2;
+        }
+        cmp_display_patch(&candidate.0, &current.0).is_gt()
+    }
+
+    /// Строки патчей в порядке **убывания игровой версии** (не по времени загрузки),
+    /// с дедупликацией эквивалентных отображений одной версии (например, 16.8 и 26.8).
+    async fn fetch_version_ordered_rows(&self, limit: i64) -> Result<Vec<(String, String, String)>> {
+        let all_rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT version, data_json, fetched_at FROM patches")
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut by_equivalent: HashMap<(i32, i32), (String, String, String)> = HashMap::new();
+        let mut passthrough = Vec::new();
+
+        for row in all_rows {
+            if let Some(key) = display_patch_to_ddragon_major_minor(&row.0) {
+                match by_equivalent.get(&key) {
+                    Some(existing) => {
+                        if Self::is_better_equivalent_patch_row(&row, existing) {
+                            by_equivalent.insert(key, row);
+                        }
+                    }
+                    None => {
+                        by_equivalent.insert(key, row);
+                    }
+                }
+            } else {
+                passthrough.push(row);
+            }
+        }
+
+        let mut out: Vec<(String, String, String)> = by_equivalent.into_values().collect();
+        out.extend(passthrough);
+        out.sort_by(|a, b| cmp_display_patch(&b.0, &a.0).then_with(|| b.2.cmp(&a.2)));
+        if limit > 0 && (out.len() as i64) > limit {
+            out.truncate(limit as usize);
+        }
+        Ok(out)
     }
 
     pub async fn clear_database(&self) -> Result<()> {
         sqlx::query("DELETE FROM patches").execute(&self.pool).await?;
-        sqlx::query("DELETE FROM augments_catalog").execute(&self.pool).await?;
         sqlx::query("DELETE FROM skin_spotlight_cache")
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM static_catalog").execute(&self.pool).await?;
-        sqlx::query("DELETE FROM game_assets_meta").execute(&self.pool).await?;
         sqlx::query("VACUUM").execute(&self.pool).await?;
         Ok(())
     }
@@ -716,7 +821,19 @@ impl Database {
         patch
             .patch_notes
             .retain(|n| n.category != PatchCategory::ModeAramAugments);
-        if let Some((entries_en, _)) = self
+        let augments = self
+            .get_static_catalog_kind("augment")
+            .await
+            .unwrap_or_default();
+        let use_bundle = crate::wiki_augment_bundle::bundled_augment_data()
+            .map(|b| !b.arena.is_empty() || !b.mayhem.is_empty())
+            .unwrap_or(false);
+        if use_bundle {
+            crate::wiki_augment_bundle::enrich_patch_notes_from_bundle(
+                &mut patch.patch_notes,
+                &augments,
+            );
+        } else if let Some((entries_en, _)) = self
             .get_augments_catalog(AUGMENTS_CATALOG_KEY_ARAM_MAYHEM_EN)
             .await?
         {
@@ -833,37 +950,28 @@ impl Database {
         Ok(None)
     }
 
-    pub async fn get_recent_patches(&self, limit: i64) -> Result<Vec<PatchData>> {
-        let rows = self.fetch_recent_rows(limit).await?;
-        let mut result = Vec::new();
+    /// Все версии из кэша, от новой к старой (тот же порядок, что и у `get_patches_newest_versions_first`).
+    pub async fn list_cached_patch_versions(&self) -> Result<Vec<String>> {
+        let all_versions: Vec<String> = sqlx::query_scalar("SELECT version FROM patches")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut vers = all_versions;
+        vers.sort_by(|a, b| cmp_display_patch(b, a));
+        Ok(vers)
+    }
+
+    /// Последние `limit` патчей по **номеру версии** (самый новый игровой патч первым).
+    pub async fn get_patches_newest_versions_first(&self, limit: i64) -> Result<Vec<PatchData>> {
+        let rows = self.fetch_version_ordered_rows(limit).await?;
+        let mut result = Vec::with_capacity(rows.len());
         for (ver, data, date_str) in rows {
-            let content: PatchJsonContent = match serde_json::from_str(&data) {
-                Ok(c) => c,
-                Err(_) => {
-                    let champions: Vec<ChampionStats> = serde_json::from_str(&data).unwrap_or_default();
-                    PatchJsonContent {
-                        champions,
-                        patch_notes: vec![],
-                        banner_url: None,
-                        patch_notes_locale: None,
-                    }
-                }
-            };
-
-            let date = chrono::DateTime::parse_from_rfc3339(&date_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-
-            result.push(PatchData {
-                version: ver,
-                fetched_at: date,
-                champions: content.champions,
-                patch_notes: content.patch_notes,
-                banner_url: content.banner_url,
-                patch_notes_locale: content.patch_notes_locale,
-            });
+            result.push(patch_data_from_stored_row(ver, &data, &date_str)?);
         }
         Ok(result)
+    }
+
+    pub async fn get_recent_patches(&self, limit: i64) -> Result<Vec<PatchData>> {
+        self.get_patches_newest_versions_first(limit).await
     }
 
     fn collect_note_history<F>(rows: Vec<(String, String, String)>, filter: F) -> Result<Vec<ChampionHistoryEntry>>
@@ -899,7 +1007,7 @@ impl Database {
         name: &str,
         category: PatchCategory,
     ) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_recent_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(20).await?;
         let search = name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             note.category == category
@@ -913,7 +1021,7 @@ impl Database {
     }
 
     pub async fn get_item_history(&self, item_name: &str) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_recent_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(20).await?;
         let search = item_name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             (note.category == PatchCategory::Items || note.category == PatchCategory::ItemsRunes)
@@ -922,7 +1030,7 @@ impl Database {
     }
 
     pub async fn get_rune_history(&self, rune_name: &str) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_recent_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(20).await?;
         let search = rune_name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             (note.category == PatchCategory::Runes || note.category == PatchCategory::ItemsRunes)
@@ -979,5 +1087,42 @@ mod tests {
         );
         assert!(notes[0].details[0].changes[0].contains("Full wiki"));
         assert!(notes[0].details[1].changes[0].contains("Damage"));
+    }
+
+    #[test]
+    fn augment_row_matches_icon_url_query_and_filename() {
+        use crate::models::{IconSourceEntry, StaticCatalogRow};
+        let row = StaticCatalogRow {
+            kind: "augment".into(),
+            stable_id: "1_arena".into(),
+            name_ru: "Can't Touch This".into(),
+            name_en: "Can't Touch This".into(),
+            riot_augment_id: None,
+            cd_meta: None,
+            icon_sources: vec![IconSourceEntry {
+                t: "cdragon".into(),
+                url: Some(
+                    "https://raw.communitydragon.org/p/CantTouchThis_small.png".into(),
+                ),
+            }],
+            source: "cdragon".into(),
+        };
+        assert!(augment_row_matches_icon_url(
+            &row,
+            "https://raw.communitydragon.org/p/CantTouchThis_small.png?v=1",
+        ));
+        assert!(augment_row_matches_icon_url(
+            &row,
+            "https://cdn.example/x/CantTouchThis_small.png",
+        ));
+        assert!(!augment_row_matches_icon_url(
+            &row,
+            "https://raw.communitydragon.org/p/Other_small.png",
+        ));
+        let item = StaticCatalogRow {
+            kind: "item".into(),
+            ..row.clone()
+        };
+        assert!(!augment_row_matches_icon_url(&item, "https://raw.communitydragon.org/p/CantTouchThis_small.png"));
     }
 }

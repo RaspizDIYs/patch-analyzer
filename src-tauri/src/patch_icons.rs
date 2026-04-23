@@ -1,7 +1,38 @@
 use anyhow::Result;
 
-use crate::db::{cd_meta_allows_maps, normalize_augment_lookup_key, Database};
+use crate::db::{
+    augment_row_matches_icon_url, cd_meta_allows_maps, normalize_augment_lookup_key, Database,
+};
 use crate::models::{PatchCategory, PatchData, PatchNoteEntry, StaticCatalogRow};
+use crate::wiki_augment_bundle::{
+    bundle_icon_for_note, bundle_icon_via_catalog_bridge, resolve_augment_title_for_bundle_lookup,
+};
+
+fn title_match_variants(title: &str) -> Vec<String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let lower = t.to_lowercase();
+    if !lower.is_empty() {
+        out.push(lower.clone());
+    }
+    if let Some(idx) = t.find('(') {
+        let s = t[..idx].trim();
+        if !s.is_empty() {
+            let sl = s.to_lowercase();
+            if !out.contains(&sl) {
+                out.push(sl);
+            }
+        }
+    }
+    let nk = normalize_augment_lookup_key(t);
+    if nk.len() >= 2 && !out.iter().any(|x| x == &nk) {
+        out.push(nk);
+    }
+    out
+}
 
 fn map_ids_for_category(cat: &PatchCategory) -> Vec<u32> {
     match cat {
@@ -71,6 +102,106 @@ fn best_item_row<'a>(
 
 fn augment_pool(meta: Option<&serde_json::Value>) -> Option<&str> {
     meta?.get("pool")?.as_str()
+}
+
+fn augment_row_matches_pool(row: &StaticCatalogRow, pool: &str) -> bool {
+    let p = augment_pool(row.cd_meta.as_ref()).unwrap_or("");
+    p.is_empty() || p == pool || p == "unknown"
+}
+
+fn best_champion_match<'a>(
+    title: &str,
+    champs: &'a [StaticCatalogRow],
+) -> Option<&'a StaticCatalogRow> {
+    let vars = title_match_variants(title);
+    for v in &vars {
+        if let Some(r) = champs.iter().find(|r| {
+            r.name_ru.to_lowercase() == *v || r.name_en.to_lowercase() == *v
+        }) {
+            return Some(r);
+        }
+    }
+    let primary = title.trim().to_lowercase();
+    if primary.len() < 2 {
+        return None;
+    }
+    champs.iter().find(|r| {
+        let ru = r.name_ru.to_lowercase();
+        let en = r.name_en.to_lowercase();
+        if ru.len() < 2 && en.len() < 2 {
+            return false;
+        }
+        primary.contains(&ru)
+            || primary.contains(&en)
+            || ru.contains(&primary)
+            || en.contains(&primary)
+    })
+}
+
+fn best_rune_match<'a>(
+    title: &str,
+    runes: &'a [StaticCatalogRow],
+) -> Option<&'a StaticCatalogRow> {
+    let vars = title_match_variants(title);
+    for v in &vars {
+        if let Some(r) = runes.iter().find(|r| {
+            r.name_ru.to_lowercase() == *v || r.name_en.to_lowercase() == *v
+        }) {
+            return Some(r);
+        }
+    }
+    let primary = title.trim().to_lowercase();
+    if primary.len() < 2 {
+        return None;
+    }
+    runes.iter().find(|r| {
+        let ru = r.name_ru.to_lowercase();
+        let en = r.name_en.to_lowercase();
+        if ru.len() < 2 && en.len() < 2 {
+            return false;
+        }
+        primary.contains(&ru)
+            || primary.contains(&en)
+            || ru.contains(&primary)
+            || en.contains(&primary)
+    })
+}
+
+fn push_item_icons_for_title(
+    title: &str,
+    maps: &[u32],
+    items: &[StaticCatalogRow],
+    candidates: &mut Vec<String>,
+) {
+    for v in title_match_variants(title) {
+        if let Some(row) = best_item_row(&v, maps, items) {
+            for u in urls_from_row(row) {
+                push_unique(candidates, u);
+            }
+            return;
+        }
+    }
+}
+
+fn push_mode_catalog_fallbacks(
+    title: &str,
+    maps: &[u32],
+    items: &[StaticCatalogRow],
+    champs: &[StaticCatalogRow],
+    runes: &[StaticCatalogRow],
+    candidates: &mut Vec<String>,
+) {
+    if let Some(row) = best_champion_match(title, champs) {
+        for u in urls_from_row(row) {
+            push_unique(candidates, u);
+        }
+    }
+    push_item_icons_for_title(title, maps, items, candidates);
+    if let Some(row) = best_rune_match(title, runes) {
+        for u in urls_from_row(row) {
+            push_unique(candidates, u);
+        }
+    }
 }
 
 fn best_augment_row<'a>(
@@ -159,47 +290,84 @@ fn enrich_one_note(
         PatchCategory::ModeArena
         | PatchCategory::ModeAramChaos
         | PatchCategory::ModeAramAugments => {
-            let norm = normalize_augment_lookup_key(&note.title);
+            let resolved = resolve_augment_title_for_bundle_lookup(&note.title);
+            let norm = normalize_augment_lookup_key(&resolved);
+            let pool = if matches!(note.category, PatchCategory::ModeArena) {
+                "arena"
+            } else {
+                "mayhem"
+            };
+            if let Some(ref img) = note.image_url {
+                if let Some(row) = augments.iter().find(|r| {
+                    augment_row_matches_icon_url(r, img)
+                        && augment_row_matches_pool(r, pool)
+                        && r.cd_meta
+                            .as_ref()
+                            .map(|m| cd_meta_allows_maps(m, &maps))
+                            .unwrap_or(true)
+                }) {
+                    if let Some(u) = bundle_icon_for_note(&row.name_en, pool) {
+                        push_unique(&mut candidates, u);
+                    }
+                    for u in urls_from_row(row) {
+                        push_unique(&mut candidates, u);
+                    }
+                }
+            }
+            if let Some(u) = bundle_icon_via_catalog_bridge(&note.title, pool, augments) {
+                push_unique(&mut candidates, u);
+            } else if let Some(u) = bundle_icon_for_note(&resolved, pool) {
+                push_unique(&mut candidates, u);
+            }
             if let Some(row) = best_augment_row(&norm, &maps, augments) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);
                 }
             }
+            push_mode_catalog_fallbacks(
+                &note.title,
+                &maps,
+                items,
+                champs,
+                runes,
+                &mut candidates,
+            );
         }
         PatchCategory::Champions => {
-            if let Some(row) = champs.iter().find(|r| {
-                r.name_ru.to_lowercase() == title_lower || r.name_en.to_lowercase() == title_lower
-            }) {
+            if let Some(row) = best_champion_match(&note.title, champs) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);
                 }
             }
         }
         PatchCategory::Runes => {
-            if let Some(row) = runes.iter().find(|r| {
-                r.name_ru.to_lowercase() == title_lower || r.name_en.to_lowercase() == title_lower
-            }) {
+            if let Some(row) = best_rune_match(&note.title, runes) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);
                 }
             }
         }
         PatchCategory::ItemsRunes => {
-            if let Some(row) = runes.iter().find(|r| {
-                r.name_ru.to_lowercase() == title_lower || r.name_en.to_lowercase() == title_lower
-            }) {
+            if let Some(row) = best_rune_match(&note.title, runes) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);
                 }
-            } else if let Some(row) = best_item_row(&title_lower, &maps, items) {
-                for u in urls_from_row(row) {
-                    push_unique(&mut candidates, u);
-                }
+            } else {
+                push_item_icons_for_title(&note.title, &maps, items, &mut candidates);
             }
         }
-        PatchCategory::ModeAram
-        | PatchCategory::Items
-        | PatchCategory::Modes => {
+        PatchCategory::ModeAram => {
+            push_item_icons_for_title(&note.title, &maps, items, &mut candidates);
+            push_mode_catalog_fallbacks(
+                &note.title,
+                &maps,
+                items,
+                champs,
+                runes,
+                &mut candidates,
+            );
+        }
+        PatchCategory::Items | PatchCategory::Modes => {
             if let Some(row) = best_item_row(&title_lower, &maps, items) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);

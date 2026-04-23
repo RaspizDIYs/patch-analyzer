@@ -1,6 +1,8 @@
 //! Маркетинговый номер патча на сайте LoL: сезон 2025 = 25.x (DDragon 15.x), сезон 2026 = 26.x (DDragon 16.x).
 //! Смещение +10 к major для DDragon >= 15.
 
+use std::cmp::Ordering;
+
 pub const DD_MAJOR_OFFSET: i32 = 10;
 
 pub const DDRAGON_MAJOR_USE_SEASON_DISPLAY_FROM: i32 = 15;
@@ -43,8 +45,20 @@ pub fn display_patch_to_ddragon_major_minor(display: &str) -> Option<(i32, i32)>
     Some((dd_maj, min))
 }
 
+/// Сравнение display-версий по игровому порядку (без привязки к времени загрузки).
+/// Некорректные строки считаются минимальными.
+pub fn cmp_display_patch(a: &str, b: &str) -> Ordering {
+    fn key(s: &str) -> (i32, i32) {
+        display_patch_to_ddragon_major_minor(s.trim())
+            .unwrap_or((i32::MIN, i32::MIN))
+    }
+    key(a).cmp(&key(b))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+
     use super::*;
 
     #[test]
@@ -93,5 +107,12 @@ mod tests {
         assert!(versions_match("25.24", "15.24"));
         assert!(versions_match("15.24", "25.24"));
         assert!(!versions_match("26.8", "26.7"));
+    }
+
+    #[test]
+    fn cmp_display_patch_newer_first_semantics() {
+        assert_eq!(cmp_display_patch("26.8", "26.7"), Ordering::Greater);
+        assert_eq!(cmp_display_patch("26.7", "26.8"), Ordering::Less);
+        assert_eq!(cmp_display_patch("25.24", "15.24"), Ordering::Equal);
     }
 }

@@ -105,11 +105,16 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
     <div className="space-y-6 text-sm">
       <Card className="border-border/60 shadow-sm">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardAppearance")}</CardTitle>
+          <CardTitle className="text-base font-medium">{t("settings.singleBlockTitle")}</CardTitle>
+          <p className="text-sm text-muted-foreground">{t("settings.singleBlockDescription")}</p>
         </CardHeader>
         <CardContent className="space-y-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionInterface")}
+          </p>
           <div className="space-y-2">
             <Label>{t("settings.language")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.languageHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(["ru", "en"] as const).map((lng) => (
                 <Button
@@ -127,6 +132,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.theme")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.themeHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(
                 [
@@ -147,16 +153,10 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
               ))}
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardDisplay")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
+          <Separator />
           <div className="space-y-2">
             <Label>{t("settings.uiScale")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.uiScaleHint")}</p>
             <div className="flex flex-wrap gap-1.5">
               {UI_SCALE_PRESETS.map((pct) => (
                 <Button
@@ -175,6 +175,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.density")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.densityHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -194,16 +195,13 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardApp")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
+          <Separator />
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionBehavior")}
+          </p>
           <div className="space-y-2">
             <Label>{t("settings.patchDefault")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.patchDefaultHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -226,6 +224,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.startupRoute")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.startupRouteHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -245,14 +244,10 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardWindow")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
+          <Separator />
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionWindow")}
+          </p>
           <div className="space-y-3">
             <Label>{t("settings.closeOnXTitle")}</Label>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -305,6 +300,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.autostart")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.autostartHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -328,16 +324,13 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           >
             {t("settings.quitApp")}
           </Button>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardAccessibility")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
+          <Separator />
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionAccessibility")}
+          </p>
           <div className="space-y-2">
             <Label>{t("settings.reducedMotion")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.reducedMotionHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(
                 [
@@ -361,6 +354,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.dateFormat")}</Label>
+            <p className="text-xs text-muted-foreground">{t("settings.dateFormatHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -380,64 +374,61 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardData")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="break-all rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
-            {dbPath || "—"}
+          <Separator />
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionData")}
           </p>
-          <p className="text-xs text-muted-foreground">{t("settings.dataLocationHint")}</p>
-          <Button type="button" size="sm" variant="secondary" disabled={!dbPath} onClick={() => void onRevealDb()}>
-            {t("settings.openInExplorer")}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">{t("settings.cardAbout")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-xs text-muted-foreground">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-foreground">{t("settings.developer")}</span>
-            <Button variant="link" className="h-auto p-0 text-xs" asChild>
-              <a
-                href="https://github.com/Jab04kin"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5"
-              >
-                <img
-                  src="https://avatars.githubusercontent.com/Jab04kin"
-                  alt=""
-                  width={24}
-                  height={24}
-                  className="rounded-full"
-                />
-                @Shpinat
-              </a>
+          <div className="space-y-3">
+            <Label>{t("settings.dataLocation")}</Label>
+            <p className="break-all rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
+              {dbPath || "—"}
+            </p>
+            <p className="text-xs text-muted-foreground">{t("settings.dataLocationHint")}</p>
+            <Button type="button" size="sm" variant="secondary" disabled={!dbPath} onClick={() => void onRevealDb()}>
+              {t("settings.openInExplorer")}
             </Button>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-foreground">{t("settings.org")}</span>
-            <Button variant="link" className="h-auto p-0 text-xs" asChild>
-              <a href="https://github.com/RaspizDIYs" target="_blank" rel="noreferrer">
-                RaspizDIYs
-              </a>
-            </Button>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-foreground">{t("settings.community")}</span>
-            <Button variant="link" className="h-auto p-0 text-xs" asChild>
-              <a href="https://discord.gg/dmx5GqHDcN" target="_blank" rel="noreferrer">
-                Discord
-              </a>
-            </Button>
+          <Separator />
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            {t("settings.sectionAbout")}
+          </p>
+          <div className="space-y-3 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">{t("settings.developer")}</span>
+              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+                <a
+                  href="https://github.com/Jab04kin"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <img
+                    src="https://avatars.githubusercontent.com/Jab04kin"
+                    alt=""
+                    width={24}
+                    height={24}
+                    className="rounded-full"
+                  />
+                  @Shpinat
+                </a>
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">{t("settings.org")}</span>
+              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+                <a href="https://github.com/RaspizDIYs" target="_blank" rel="noreferrer">
+                  RaspizDIYs
+                </a>
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">{t("settings.community")}</span>
+              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+                <a href="https://discord.gg/dmx5GqHDcN" target="_blank" rel="noreferrer">
+                  Discord
+                </a>
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

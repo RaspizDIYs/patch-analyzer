@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core"
 import { useTranslation } from "react-i18next"
-import { ArrowLeft, RefreshCw, Search } from "lucide-react"
+import { ArrowLeft, Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
 import {
   Table,
@@ -16,12 +15,43 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatAppDate } from "@/lib/format-date"
-import { loadAppPreferences } from "@/lib/app-preferences"
-import type { MayhemAugmentation, MayhemAugmentationsPayload } from "@/types/mayhem"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Skeleton } from "@/components/ui/skeleton"
 import { cleanUrl } from "@/lib/patch-utils"
+import { wikiAugmentToPlain } from "@/lib/wiki-augment-plain"
 import { cn } from "@/lib/utils"
 import type { IconSourceEntry, StaticCatalogRow } from "@/lib/catalog-from-tauri"
+import type { AugmentsBundledFile, BundledAugmentEntry } from "@/types/bundled-augments"
+
+type BundleLoad = "loading" | "ready" | "error"
+
+type PoolTab = "arena" | "mayhem"
+type SortField = "name" | "tier" | null
+type SortDirection = "asc" | "desc"
+
+function augmentSetOneChunk(s: string): string {
+  let t = s.trim()
+  if (!t || t === "-") return ""
+  t = t.replace(/\[\[File:[^\]]+\]\]\s*/gi, "")
+  const piped = t.match(/\[\[[^\]]*\|([^\]]+)\]\]/)
+  if (piped?.[1]) {
+    return piped[1].replace(/_/g, " ").trim()
+  }
+  const simple = t.match(/\[\[([^\]]+)\]\]/)
+  if (simple?.[1]) {
+    const tail = simple[1].split("|").pop() ?? simple[1]
+    return tail.replace(/_/g, " ").trim()
+  }
+  return t
+}
+
+function augmentSetDisplay(raw: string): string {
+  const s = raw.trim()
+  if (!s || s === "-") return ""
+  const chunks = s.split(/<br\s*\/?>/i)
+  const parts = chunks.map((c) => augmentSetOneChunk(c)).filter(Boolean)
+  return parts.length ? parts.join(" · ") : augmentSetOneChunk(s)
+}
 
 function normAugKey(s: string): string {
   return s
@@ -32,8 +62,17 @@ function normAugKey(s: string): string {
     .join(" ")
 }
 
+function augmentTierRank(tier: string): number {
+  const key = tier.trim().toLowerCase()
+  if (key === "prismatic") return 3
+  if (key === "gold") return 2
+  if (key === "silver") return 1
+  return 0
+}
+
 function matchStaticAugment(
-  row: MayhemAugmentation,
+  row: BundledAugmentEntry,
+  pool: PoolTab,
   rows: StaticCatalogRow[],
 ): StaticCatalogRow | undefined {
   const k = normAugKey(row.title)
@@ -41,29 +80,14 @@ function matchStaticAugment(
   return rows.find((r) => {
     const en = normAugKey(r.name_en)
     const ru = normAugKey(r.name_ru)
-    return en === k || ru === k
-  })
-}
-
-function iconUrlsForRow(row: MayhemAugmentation, cat: StaticCatalogRow | undefined): string[] {
-  const out: string[] = []
-  const seen = new Set<string>()
-  const push = (u: string | undefined) => {
-    if (!u?.trim()) return
-    if (seen.has(u)) return
-    seen.add(u)
-    out.push(u)
-  }
-  if (cat?.icon_sources?.length) {
-    for (const s of cat.icon_sources) {
-      const src = sourceToUrl(s)
-      push(src)
+    if (en !== k && ru !== k) return false
+    const raw = r.cd_meta?.pool
+    const metaPool = typeof raw === "string" ? raw : ""
+    if (metaPool && metaPool !== "unknown" && metaPool !== pool) {
+      return false
     }
-  }
-  if (row.icon_url) {
-    push(cleanUrl(row.icon_url) ?? row.icon_url)
-  }
-  return out
+    return true
+  })
 }
 
 function sourceToUrl(s: IconSourceEntry): string {
@@ -76,6 +100,26 @@ function sourceToUrl(s: IconSourceEntry): string {
     }
   }
   return s.url
+}
+
+function iconUrlsForRow(row: BundledAugmentEntry, cat: StaticCatalogRow | undefined): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (u: string | undefined) => {
+    if (!u?.trim()) return
+    if (seen.has(u)) return
+    seen.add(u)
+    out.push(u)
+  }
+  if (row.icon_url) {
+    push(cleanUrl(row.icon_url) ?? row.icon_url)
+  }
+  if (cat?.icon_sources?.length) {
+    for (const s of cat.icon_sources) {
+      push(sourceToUrl(s))
+    }
+  }
+  return out
 }
 
 function AugmentIcon({ urls, label }: { urls: string[]; label: string }) {
@@ -104,87 +148,162 @@ function AugmentIcon({ urls, label }: { urls: string[]; label: string }) {
 
 export function AugmentsPage() {
   const { t, i18n } = useTranslation()
-  const dateFmt = loadAppPreferences().dateFormat
-  const locale = i18n.language?.startsWith("en") ? "en" : "ru"
-  const [data, setData] = useState<MayhemAugmentationsPayload | null>(null)
+  const [bundle, setBundle] = useState<AugmentsBundledFile | null>(null)
+  const [bundleStatus, setBundleStatus] = useState<BundleLoad>("loading")
+  const [pool, setPool] = useState<PoolTab>("arena")
   const [staticAugments, setStaticAugments] = useState<StaticCatalogRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState("")
-  const autoRefreshTried = useRef(false)
+  const [sortField, setSortField] = useState<SortField>(null)
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc")
+  const showSetColumn = pool === "mayhem"
+  const nameCollator = useMemo(
+    () =>
+      new Intl.Collator(i18n.resolvedLanguage === "ru" ? "ru" : "en", {
+        sensitivity: "base",
+        numeric: true,
+      }),
+    [i18n.resolvedLanguage],
+  )
 
-  const load = useCallback(async () => {
-    if (!isTauri()) {
-      setLoading(false)
-      setErr("__WEB_ONLY__")
-      return
-    }
-    setErr(null)
-    try {
-      const [p, augRows] = await Promise.all([
-        invoke<MayhemAugmentationsPayload>("get_mayhem_augmentations_page", {
-          locale,
-        }),
-        invoke<StaticCatalogRow[]>("get_static_catalog_rows", { kind: "augment" }).catch(() => [] as StaticCatalogRow[]),
-      ])
-      setData(p)
-      setStaticAugments(Array.isArray(augRows) ? augRows : [])
-    } catch (e) {
-      setErr(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [locale])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    if (!isTauri() || loading || refreshing || autoRefreshTried.current) return
-    if (data == null) return
-    if (data.entries.length !== 0) return
-    autoRefreshTried.current = true
-    setRefreshing(true)
-    setErr(null)
-    invoke("refresh_mayhem_augmentations_from_wiki")
-      .then(() => load())
-      .catch((e) => setErr(String(e)))
-      .finally(() => setRefreshing(false))
-  }, [loading, data, load, refreshing])
-
-  async function onRefresh() {
+  const loadCatalog = useCallback(async () => {
     if (!isTauri()) return
-    setRefreshing(true)
-    setErr(null)
     try {
-      await invoke("refresh_mayhem_augmentations_from_wiki")
-      await load()
-    } catch (e) {
-      setErr(String(e))
-    } finally {
-      setRefreshing(false)
+      const augRows = await invoke<StaticCatalogRow[]>("get_static_catalog_rows", {
+        kind: "augment",
+      })
+      setStaticAugments(Array.isArray(augRows) ? augRows : [])
+    } catch {
+      setStaticAugments([])
     }
-  }
+  }, [])
 
-  const filtered = useMemo(() => {
-    const entries = data?.entries ?? []
-    const s = q.trim().toLowerCase()
-    if (!s) return entries
-    return entries.filter((row) => {
-      const tier = row.tier.toLowerCase()
-      const setL = row.set_label.toLowerCase()
-      const title = row.title.toLowerCase()
-      const effect = row.effect_html.replace(/<[^>]+>/g, " ").toLowerCase()
-      return (
-        title.includes(s) ||
-        tier.includes(s) ||
-        setL.includes(s) ||
-        effect.includes(s)
-      )
+  useEffect(() => {
+    void loadCatalog()
+  }, [loadCatalog])
+
+  useEffect(() => {
+    let cancelled = false
+    setBundleStatus("loading")
+    void import("@/data/augments-bundled.json")
+      .then((m: { default: AugmentsBundledFile }) => {
+        if (cancelled) return
+        setBundle(m.default)
+        setBundleStatus("ready")
+      })
+      .catch(() => {
+        if (cancelled) return
+        setBundleStatus("error")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const entries = useMemo(() => {
+    if (!bundle) return []
+    return pool === "arena" ? bundle.arena : bundle.mayhem
+  }, [bundle, pool])
+
+  const filteredSorted = useMemo(() => {
+    const rows = entries.map((row) => {
+      const cat = matchStaticAugment(row, pool, staticAugments)
+      const localizedTitle =
+        i18n.resolvedLanguage === "ru" && cat?.name_ru.trim() ? cat.name_ru : row.title
+      return {
+        row,
+        cat,
+        localizedTitle,
+        titleRu: cat?.name_ru.toLowerCase() ?? "",
+        titleEn: cat?.name_en.toLowerCase() ?? "",
+      }
     })
-  }, [data?.entries, q])
+
+    const s = q.trim().toLowerCase()
+    const filtered = s
+      ? rows.filter(({ row, titleRu, titleEn }) => {
+        const tier = row.tier.toLowerCase()
+        const setL = showSetColumn
+          ? `${augmentSetDisplay(row.set_label)} ${row.set_label}`.toLowerCase()
+          : ""
+        const title = row.title.toLowerCase()
+        const effect = wikiAugmentToPlain(row.description_html).toLowerCase()
+        const notes = wikiAugmentToPlain(row.notes_html ?? "").toLowerCase()
+        return (
+          title.includes(s) ||
+          titleRu.includes(s) ||
+          titleEn.includes(s) ||
+          tier.includes(s) ||
+          (showSetColumn && setL.includes(s)) ||
+          effect.includes(s) ||
+          notes.includes(s)
+        )
+      })
+      : rows
+
+    if (!sortField) return filtered
+    return [...filtered].sort((a, b) => {
+      if (sortField === "name") {
+        const cmp = nameCollator.compare(a.localizedTitle, b.localizedTitle)
+        return sortDirection === "asc" ? cmp : -cmp
+      }
+      const tierA = augmentTierRank(a.row.tier)
+      const tierB = augmentTierRank(b.row.tier)
+      if (tierA !== tierB) {
+        return sortDirection === "asc" ? tierA - tierB : tierB - tierA
+      }
+      const tieBreak = nameCollator.compare(a.localizedTitle, b.localizedTitle)
+      return sortDirection === "asc" ? tieBreak : -tieBreak
+    })
+  }, [
+    entries,
+    i18n.resolvedLanguage,
+    nameCollator,
+    pool,
+    q,
+    showSetColumn,
+    sortDirection,
+    sortField,
+    staticAugments,
+  ])
+
+  const toggleSort = useCallback(
+    (field: Exclude<SortField, null>) => {
+      const defaultDirection: SortDirection = field === "tier" ? "desc" : "asc"
+      const oppositeDirection: SortDirection = defaultDirection === "asc" ? "desc" : "asc"
+
+      if (sortField !== field) {
+        setSortField(field)
+        setSortDirection(defaultDirection)
+        return
+      }
+
+      if (sortDirection === defaultDirection) {
+        setSortDirection(oppositeDirection)
+        return
+      }
+
+      setSortField(null)
+      setSortDirection(defaultDirection)
+    },
+    [sortDirection, sortField],
+  )
+
+  const sortSuffix = useCallback(
+    (field: Exclude<SortField, null>) => {
+      if (sortField !== field) {
+        return field === "name" ? "(A-Я)" : "(3-1)"
+      }
+      if (field === "name") {
+        return sortDirection === "asc" ? "(A-Я)" : "(Я-A)"
+      }
+      return sortDirection === "asc" ? "(1-3)" : "(3-1)"
+    },
+    [sortDirection, sortField],
+  )
+
+  const emptyBundle = bundle
+    ? bundle.arena.length === 0 && bundle.mayhem.length === 0
+    : false
 
   return (
     <div className="space-y-6">
@@ -197,51 +316,44 @@ export function AugmentsPage() {
             </Link>
           </Button>
           <h2 className="text-xl font-semibold tracking-tight">{t("augments.title")}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t("augments.subtitle")}</p>
-          {data?.fetched_at ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("augments.updated", {
-                date: formatAppDate(data.fetched_at, dateFmt, i18n.language),
-              })}
-            </p>
-          ) : null}
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          disabled={!isTauri() || refreshing}
-          onClick={() => void onRefresh()}
-        >
-          <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} aria-hidden />
-          {t("augments.refreshWiki")}
-        </Button>
       </div>
+
+      <Tabs
+        value={pool}
+        onValueChange={(v) => setPool(v as PoolTab)}
+        className="w-full max-w-md"
+      >
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="arena">{t("augments.tabArena")}</TabsTrigger>
+          <TabsTrigger value="mayhem">{t("augments.tabMayhem")}</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <Card className="border-border/60">
         <CardHeader>
           <CardTitle className="text-base">{t("augments.tableTitle")}</CardTitle>
-          <CardDescription>{t("augments.tableHint")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {loading && (
-            <div className="space-y-2">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
+          {bundleStatus === "loading" && (
+            <div className="space-y-3" aria-busy>
+              <div className="flex flex-wrap items-center gap-3">
+                <Skeleton className="h-9 w-full max-w-md flex-1" />
+                <Skeleton className="h-4 w-32" />
+              </div>
+              <Skeleton className="h-48 w-full" />
             </div>
           )}
-          {!loading && err === "__WEB_ONLY__" && (
-            <p className="text-sm text-muted-foreground">{t("augments.tauriOnly")}</p>
+          {bundleStatus === "error" && (
+            <p className="text-sm text-destructive">{t("augments.bundleLoadError")}</p>
           )}
-          {!loading && err && err !== "__WEB_ONLY__" && (
-            <p className="text-sm text-destructive">{err}</p>
+          {bundleStatus === "ready" && emptyBundle && (
+            <p className="text-sm text-muted-foreground">{t("augments.bundleEmpty")}</p>
           )}
-          {!loading && !err && data && data.entries.length === 0 && (
-            <p className="text-sm text-muted-foreground">{t("augments.empty")}</p>
+          {bundleStatus === "ready" && !emptyBundle && entries.length === 0 && (
+            <p className="text-sm text-muted-foreground">{t("augments.poolEmpty")}</p>
           )}
-          {!loading && !err && data && data.entries.length > 0 && (
+          {bundleStatus === "ready" && !emptyBundle && entries.length > 0 && (
             <>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="relative max-w-md flex-1">
@@ -256,7 +368,7 @@ export function AugmentsPage() {
                   />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {t("augments.shownCount", { n: filtered.length, total: data.entries.length })}
+                  {t("augments.shownCount", { n: filteredSorted.length, total: entries.length })}
                 </p>
               </div>
               <div className="overflow-x-auto rounded-md border border-border/50">
@@ -264,30 +376,56 @@ export function AugmentsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[88px]">{t("augments.colIcon")}</TableHead>
-                      <TableHead className="min-w-[160px]">{t("augments.colName")}</TableHead>
+                      <TableHead className="min-w-[160px]">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-auto p-0 text-left text-sm font-medium"
+                          onClick={() => toggleSort("name")}
+                        >
+                          {t("augments.colName")} {sortSuffix("name")}
+                        </Button>
+                      </TableHead>
                       <TableHead className="min-w-[280px]">{t("augments.colEffect")}</TableHead>
-                      <TableHead className="w-[120px]">{t("augments.colTier")}</TableHead>
-                      <TableHead className="min-w-[160px]">{t("augments.colSet")}</TableHead>
+                      <TableHead className="w-[120px]">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-auto p-0 text-left text-sm font-medium"
+                          onClick={() => toggleSort("tier")}
+                        >
+                          {t("augments.colTier")} {sortSuffix("tier")}
+                        </Button>
+                      </TableHead>
+                      {showSetColumn ? (
+                        <TableHead className="min-w-[160px]">{t("augments.colSet")}</TableHead>
+                      ) : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filtered.map((row: MayhemAugmentation) => {
-                      const cat = matchStaticAugment(row, staticAugments)
+                    {filteredSorted.map(({ row, cat, localizedTitle }, ix: number) => {
                       const iconUrls = iconUrlsForRow(row, cat)
+                      const key = `${row.pool}-${row.title}-${ix}`
+                      const descPlain = wikiAugmentToPlain(row.description_html, { maxChars: 1200 })
+                      const notesPlain = wikiAugmentToPlain(row.notes_html ?? "", { maxChars: 500 })
                       return (
-                        <TableRow key={row.id}>
+                        <TableRow key={key}>
                           <TableCell className="align-top">
                             <AugmentIcon urls={iconUrls} label={row.title} />
                           </TableCell>
                           <TableCell className="align-top">
-                            <span className="font-medium leading-snug text-foreground">{row.title}</span>
+                            <span className="font-medium leading-snug text-foreground">{localizedTitle}</span>
                           </TableCell>
                           <TableCell className="align-top text-sm">
-                            {row.effect_html.trim() ? (
-                              <div
-                                className="max-w-none text-sm leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline [&_img]:inline [&_img]:max-h-8 [&_img]:align-middle"
-                                dangerouslySetInnerHTML={{ __html: row.effect_html }}
-                              />
+                            {descPlain.trim() ? (
+                              <div className="space-y-1">
+                                <p className="max-w-none text-sm leading-relaxed text-foreground">{descPlain}</p>
+                                {notesPlain.trim() ? (
+                                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{notesPlain}</p>
+                                ) : null}
+                              </div>
                             ) : (
                               <span className="text-muted-foreground">—</span>
                             )}
@@ -301,28 +439,25 @@ export function AugmentsPage() {
                               <span className="text-sm text-muted-foreground">—</span>
                             )}
                           </TableCell>
-                          <TableCell className="align-top">
-                            <div className="flex items-center gap-2 text-sm">
-                              {row.set_icon_url ? (
-                                <img
-                                  src={cleanUrl(row.set_icon_url) ?? row.set_icon_url}
-                                  alt=""
-                                  className="h-8 w-8 shrink-0 rounded object-contain"
-                                  loading="lazy"
-                                />
-                              ) : null}
-                              <span className={cn(!row.set_label.trim() && "text-muted-foreground")}>
-                                {row.set_label.trim() || "—"}
+                          {showSetColumn ? (
+                            <TableCell className="align-top">
+                              <span
+                                className={cn(
+                                  "text-sm",
+                                  !augmentSetDisplay(row.set_label) && "text-muted-foreground",
+                                )}
+                              >
+                                {augmentSetDisplay(row.set_label) || "—"}
                               </span>
-                            </div>
-                          </TableCell>
+                            </TableCell>
+                          ) : null}
                         </TableRow>
                       )
                     })}
                   </TableBody>
                 </Table>
               </div>
-              {filtered.length === 0 && q.trim() && (
+              {filteredSorted.length === 0 && q.trim() && (
                 <p className="text-sm text-muted-foreground">{t("augments.noSearchResults")}</p>
               )}
             </>

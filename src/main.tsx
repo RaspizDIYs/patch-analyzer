@@ -11,13 +11,22 @@ import "./index.css";
 applyDomFromPreferences(loadAppPreferences());
 document.documentElement.lang = i18n.language?.startsWith("en") ? "en" : "ru";
 
-if (isTauri()) {
+function hideBootLoader() {
+  const loader = document.getElementById("boot-loader");
+  if (!loader) return;
+  loader.setAttribute("data-hidden", "true");
+  window.setTimeout(() => loader.remove(), 260);
+}
+
+if (isTauri() && import.meta.env.DEV) {
   document.addEventListener(
     "keydown",
     (e) => {
       if (e.code !== "F12") return;
       e.preventDefault();
-      void invoke("plugin:webview|internal_toggle_devtools").catch(() => { });
+      void invoke("plugin:webview|internal_toggle_devtools").catch((err) => {
+        console.error("internal_toggle_devtools failed", err);
+      });
     },
     true,
   );
@@ -37,3 +46,5 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </I18nextProvider>
   </React.StrictMode>,
 );
+
+requestAnimationFrame(() => hideBootLoader());

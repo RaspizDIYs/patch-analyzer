@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use reqwest::Url;
 use reqwest::header;
@@ -289,7 +290,7 @@ fn normalize_patch_notes_locale(s: &str) -> &'static str {
 
 const LEAGUE_WIKI_ORIGIN: &str = "https://wiki.leagueoflegends.com";
 
-fn resolve_league_wiki_asset_url(raw: &str) -> String {
+pub(crate) fn resolve_league_wiki_asset_url(raw: &str) -> String {
     let u = raw.trim();
     if u.starts_with("//") {
         return format!("https:{u}");
@@ -300,7 +301,7 @@ fn resolve_league_wiki_asset_url(raw: &str) -> String {
     u.to_string()
 }
 
-fn clean_wiki_asset_url(raw: &str) -> String {
+pub(crate) fn clean_wiki_asset_url(raw: &str) -> String {
     let u = resolve_league_wiki_asset_url(raw);
     let u = u.trim();
     if u.contains("akamaihd.net") && u.contains("?f=") {
@@ -739,6 +740,8 @@ impl Scraper {
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .cookie_store(true)
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(90))
             .build()?;
 
         Ok(Self { client })
@@ -813,19 +816,47 @@ impl Scraper {
     }
 
     async fn load_aram_mayhem_augments_wiki_html(&self) -> Result<String> {
+        const STEP: Duration = Duration::from_secs(50);
         let path = "/en-us/ARAM:_Mayhem/Augments";
         let page = "ARAM:_Mayhem/Augments";
-        match self.fetch_wiki_parse_fragment("en-us", page).await {
-            Ok(frag) => Ok(wrap_wiki_parse_fragment_as_document(&frag)),
-            Err(e_api) => match self.get_league_wiki_html(path).await {
-                Ok(html) => Ok(html),
-                Err(e_get) => self
-                    .get_league_wiki_html_with_extra_headers(path)
-                    .await
-                    .map_err(|e3| {
-                        anyhow::anyhow!("wiki augments: API {e_api}; GET {e_get}; GET+hdr {e3}")
-                    }),
-            },
+
+        let api = tokio::time::timeout(STEP, self.fetch_wiki_parse_fragment("en-us", page)).await;
+        match api {
+            Ok(Ok(frag)) => Ok(wrap_wiki_parse_fragment_as_document(&frag)),
+            Ok(Err(e_api)) => {
+                let get = tokio::time::timeout(STEP, self.get_league_wiki_html(path)).await;
+                match get {
+                    Ok(Ok(html)) => Ok(html),
+                    Ok(Err(e_get)) => tokio::time::timeout(STEP, self.get_league_wiki_html_with_extra_headers(path))
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "wiki augments: timeout GET+hdr (API {e_api}; GET {e_get})"
+                            )
+                        })?
+                        .map_err(|e3| {
+                            anyhow::anyhow!("wiki augments: API {e_api}; GET {e_get}; GET+hdr {e3}")
+                        }),
+                    Err(_) => Err(anyhow::anyhow!(
+                        "wiki augments: timeout GET (API {e_api})"
+                    )),
+                }
+            }
+            Err(_) => {
+                let get = tokio::time::timeout(STEP, self.get_league_wiki_html(path)).await;
+                match get {
+                    Ok(Ok(html)) => Ok(html),
+                    Ok(Err(e_get)) => tokio::time::timeout(STEP, self.get_league_wiki_html_with_extra_headers(path))
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!("wiki augments: timeout GET+hdr (GET {e_get})")
+                        })?
+                        .map_err(|e3| {
+                            anyhow::anyhow!("wiki augments: GET {e_get}; GET+hdr {e3}")
+                        }),
+                    Err(_) => Err(anyhow::anyhow!("wiki augments: timeout API+GET")),
+                }
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 
 /** Совпадает с db::WIKI_AUGMENT_DETAIL_TITLE (Rust). */
 export const WIKI_AUGMENT_DETAIL_TITLE = "League Wiki"
@@ -44,6 +45,21 @@ export function displayPatchToDdragonMajorMinor(display: string): { major: numbe
 export function cleanUrl(url?: string | null) {
   if (!url) return undefined
   const u = url.trim()
+  const isWindowsAbsPath = /^[a-zA-Z]:[\\/]/.test(u)
+  const isFileUrl = u.startsWith("file://")
+
+  if (isWindowsAbsPath || isFileUrl) {
+    try {
+      const path = isFileUrl ? decodeURIComponent(u.replace(/^file:\/\/\/?/, "")) : u
+      if (isTauri()) {
+        return convertFileSrc(path)
+      }
+      return `file:///${path.replace(/\\/g, "/")}`
+    } catch {
+      return u
+    }
+  }
+
   if (u.startsWith("//")) {
     return `https:${u}`
   }

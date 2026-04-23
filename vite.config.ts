@@ -11,6 +11,34 @@ export default defineConfig(async () => ({
     },
   },
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@tauri-apps")) {
+            return "tauri-vendor";
+          }
+          if (id.includes("@radix-ui")) {
+            return "radix-vendor";
+          }
+          if (id.includes("i18next") || id.includes("react-i18next")) {
+            return "i18n-vendor";
+          }
+          if (
+            /[/\\]node_modules[/\\](?:react|react-dom|react-router|react-router-dom|scheduler|react-is|use-sync-external-store)[/\\]/.test(
+              id,
+            ) ||
+            id.includes("node_modules/react/") ||
+            id.includes("node_modules/react-dom/")
+          ) {
+            return "react-vendor";
+          }
+        },
+      },
+    },
+  },
+
   clearScreen: false,
   server: {
     port: 1420,
