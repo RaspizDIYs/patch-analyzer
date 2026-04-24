@@ -1,6 +1,6 @@
 {
   "productName": "Patch Analyzer",
-  "version": "1.0.3",
+  "version": "1.0.4-beta.1",
   "identifier": "com.lolmeta.analyzer",
   "build": {
     "beforeDevCommand": "npm run dev",

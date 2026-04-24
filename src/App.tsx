@@ -68,6 +68,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -147,7 +148,16 @@ const TIER_HISTORY_TOP_LIMIT = 10;
 const TIER_ARCHIVE_SORT_OPTIONS = ["score", "buffs", "nerfs"] as const;
 const PREVIOUS_PATCH_TARGET_OPTIONS = [50, 60, 70, 80, 90, 100] as const;
 const PREVIOUS_PATCH_SAVED_EVENT = "previous_patch_saved";
+const SYNC_PATCH_HISTORY_PROGRESS_EVENT = "sync_patch_history_progress";
 type PreviousPatchSavedPayload = {
+  version: string;
+  processed: number;
+  total: number;
+  downloaded: number;
+  skipped: number;
+  saved: boolean;
+};
+type SyncPatchHistoryProgressPayload = {
   version: string;
   processed: number;
   total: number;
@@ -247,9 +257,12 @@ function App() {
   const [version, setVersion] = useState("");
   const [patchesList, setPatchesList] = useState<string[]>([]);
   const [cacheLoaded, setCacheLoaded] = useState(false);
+  const [initialBootLoading, setInitialBootLoading] = useState(false);
+  const [showDownloadHint, setShowDownloadHint] = useState(false);
   const [patchData, setPatchData] = useState<PatchData | null>(null);
   const [newPatches, setNewPatches] = useState<Set<string>>(new Set());
   const [theme, setTheme] = useState<ThemeOption>(() => loadAppPreferences().theme);
+  const [syncAllProgress, setSyncAllProgress] = useState<SyncPatchHistoryProgressPayload | null>(null);
   const prevLocaleRef = useRef(patchNotesLocale);
   const currentVersionRef = useRef(version);
 
@@ -265,9 +278,10 @@ function App() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    let unlisten: UnlistenFn | undefined;
+    let unlistenPrevious: UnlistenFn | undefined;
+    let unlistenSync: UnlistenFn | undefined;
     void (async () => {
-      unlisten = await listen<PreviousPatchSavedPayload>(PREVIOUS_PATCH_SAVED_EVENT, async (event) => {
+      unlistenPrevious = await listen<PreviousPatchSavedPayload>(PREVIOUS_PATCH_SAVED_EVENT, async (event) => {
         setPreviousSyncProgress({
           processed: event.payload.processed,
           total: event.payload.total,
@@ -281,9 +295,29 @@ function App() {
           // ignore live update errors
         }
       });
+      unlistenSync = await listen<SyncPatchHistoryProgressPayload>(
+        SYNC_PATCH_HISTORY_PROGRESS_EVENT,
+        async (event) => {
+          const payload = event.payload;
+          setSyncAllProgress(payload);
+          setSyncing(payload.total > 0 ? payload.processed < payload.total : false);
+          if (payload.saved) {
+            try {
+              const list = await invoke<string[]>("get_cached_patch_versions");
+              setPatchesList(list);
+            } catch {
+              // ignore
+            }
+          }
+          if (payload.total > 0 && payload.processed >= payload.total) {
+            window.setTimeout(() => setSyncAllProgress(null), 2500);
+          }
+        },
+      );
     })();
     return () => {
-      unlisten?.();
+      unlistenPrevious?.();
+      unlistenSync?.();
     };
   }, []);
   useEffect(() => {
@@ -440,17 +474,51 @@ function App() {
       return;
     }
     void (async () => {
+      const prefs = loadAppPreferences();
       try {
         const list = await invoke<string[]>("get_cached_patch_versions");
         setPatchesList(list);
+        setShowDownloadHint(!prefs.hasSeenDownloadHint && list.length === 0);
         if (list.length === 0) {
-          setVersion("");
+          if (!prefs.hasCompletedInitialPatchBoot) {
+            setInitialBootLoading(true);
+            try {
+              const available = await invoke<string[]>("get_available_patches");
+              const latest = available[0];
+              if (latest) {
+                const patchResult = await invoke<PatchData>("get_patch_by_version", {
+                  version: latest,
+                  patchNotesLocale,
+                  allowNetwork: true,
+                });
+                setPatchData(patchResult);
+                const cached = await invoke<string[]>("get_cached_patch_versions");
+                const nextList = cached.length > 0 ? cached : [latest];
+                setPatchesList(nextList);
+                setVersion(latest);
+                saveAppPreferences({
+                  lastPatchVersion: latest,
+                  hasCompletedInitialPatchBoot: true,
+                });
+                void handleSyncAll("background");
+              } else {
+                setVersion("");
+              }
+            } catch (e) {
+              setVersion("");
+              toast.error(t("toasts.loadError", { msg: String(e) }));
+            } finally {
+              setInitialBootLoading(false);
+            }
+          } else {
+            setVersion("");
+          }
           return;
         }
-        const mode = loadAppPreferences().patchDefaultMode;
+        const mode = prefs.patchDefaultMode;
         let v = list[0]!;
         if (mode !== "alwaysLatest") {
-          const saved = loadAppPreferences().lastPatchVersion;
+          const saved = prefs.lastPatchVersion;
           if (saved && list.includes(saved)) v = saved;
         }
         setVersion(v);
@@ -484,13 +552,27 @@ function App() {
     void loadData(version, false, undefined, localeChanged);
   }, [version, patchNotesLocale, loadData]);
 
-  async function handleSyncAll() {
+  async function handleSyncAll(trigger: "manual" | "background" = "manual") {
+    if (trigger === "manual") {
+      setShowDownloadHint(false);
+      saveAppPreferences({ hasSeenDownloadHint: true });
+    }
     setSyncing(true);
-    toast.info(t("toasts.syncingAll"));
     try {
+      const available = await invoke<string[]>("get_available_patches");
+      setSyncAllProgress({
+        version: "",
+        processed: 0,
+        total: available.length,
+        downloaded: 0,
+        skipped: 0,
+        saved: false,
+      });
       await invoke("sync_patch_history", { patchNotesLocale });
-      toast.success(t("toasts.syncDone"));
-      const list = await invoke<string[]>("get_available_patches");
+      if (trigger === "manual") {
+        toast.success(t("toasts.syncDone"));
+      }
+      const list = await invoke<string[]>("get_cached_patch_versions");
       setPatchesList(list);
       const status = await refreshPatchesStatus(list);
       setNewPatches((prev) => {
@@ -500,7 +582,7 @@ function App() {
         });
         return updated;
       });
-      let v = version;
+      let v = currentVersionRef.current;
       if (list.length > 0 && !list.includes(v)) {
         v = list[0]!;
         setVersion(v);
@@ -514,6 +596,7 @@ function App() {
       toast.error(t("toasts.syncError", { msg: String(e) }));
     } finally {
       setSyncing(false);
+      window.setTimeout(() => setSyncAllProgress(null), 2500);
     }
   }
 
@@ -578,6 +661,20 @@ function App() {
         <StartupRouteSync />
         <div className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased selection:bg-primary/25">
           <Toaster position="top-right" />
+          {initialBootLoading ? (
+            <div className="fixed inset-0 z-120 flex items-center justify-center bg-background/92 backdrop-blur-sm">
+              <Card className="w-full max-w-md border-border/60 bg-card/95 shadow-xl">
+                <CardContent className="space-y-4 p-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    {t("header.initialBootLabel")}
+                  </p>
+                  <h2 className="text-lg font-semibold text-foreground">{t("header.initialBootTitle")}</h2>
+                  <Skeleton className="h-3 w-full" />
+                  <p className="text-sm text-muted-foreground">{t("header.initialBootHint")}</p>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
           <div className="flex min-h-screen flex-col">
             <header className="sticky top-0 z-50 border-b border-border/40 bg-background/75 backdrop-blur-xl supports-backdrop-filter:bg-background/60">
               <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-3 sm:px-6">
@@ -648,15 +745,21 @@ function App() {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground"
+                        className={cn(
+                          "h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground",
+                          showDownloadHint &&
+                            "ring-2 ring-primary/70 ring-offset-2 ring-offset-background animate-pulse text-primary",
+                        )}
                         aria-label={t("header.downloadPatches")}
                         disabled={syncing || syncingPrevious}
-                        onClick={handleSyncAll}
+                        onClick={() => void handleSyncAll("manual")}
                       >
                         <DownloadCloud className={cn("h-4 w-4", syncing && "animate-bounce")} />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">{t("header.downloadPatchesHint")}</TooltipContent>
+                    <TooltipContent side="bottom">
+                      {showDownloadHint ? t("header.downloadPatchesFirstRunHint") : t("header.downloadPatchesHint")}
+                    </TooltipContent>
                   </Tooltip>
                   <DropdownMenu>
                     <Tooltip>
@@ -776,6 +879,43 @@ function App() {
                 </div>
               </div>
             </header>
+            {syncAllProgress && syncAllProgress.total > 0 ? (
+              <div className="mx-auto w-full max-w-6xl px-4 pt-3 sm:px-6">
+                <Card className="border-border/60 bg-card/90">
+                  <CardContent className="space-y-2 p-3">
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>{t("header.syncProgressTitle")}</span>
+                      <span>
+                        {t("header.syncProgressCounter", {
+                          processed: syncAllProgress.processed,
+                          total: syncAllProgress.total,
+                        })}
+                      </span>
+                    </div>
+                    <Progress
+                      value={
+                        syncAllProgress.total > 0
+                          ? (syncAllProgress.processed / syncAllProgress.total) * 100
+                          : 0
+                      }
+                    />
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span className="truncate">
+                        {syncAllProgress.version
+                          ? t("header.syncProgressVersion", { version: syncAllProgress.version })
+                          : t("header.syncProgressPreparing")}
+                      </span>
+                      <span>
+                        {t("header.syncProgressStats", {
+                          downloaded: syncAllProgress.downloaded,
+                          skipped: syncAllProgress.skipped,
+                        })}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : null}
             <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-6 sm:py-8">
               <ErrorBoundary>
                 <Suspense fallback={<RouteFallback />}>
@@ -927,7 +1067,7 @@ function TierListView() {
     try {
       const [tierEntries, cachedVersions] = await Promise.all([
         invoke<TierEntry[]>("get_tier_list", { windowSize: tierWindow }),
-        invoke<string[]>("get_cached_patch_versions").catch(() => []),
+        invoke<string[]>("get_patch_window_versions", { windowSize: tierWindow }).catch(() => []),
       ]);
       setData(tierEntries);
       const windowVersions = cachedVersions.slice(0, tierWindow);
@@ -1059,7 +1199,9 @@ function TierListView() {
         : entityType === "rune"
           ? "rune"
           : "item";
-    navigate(`/history?type=${encodeURIComponent(type)}&name=${encodeURIComponent(entry.name)}`);
+    navigate(
+      `/history?type=${encodeURIComponent(type)}&name=${encodeURIComponent(entry.name)}&window=${encodeURIComponent(String(tierWindow))}`,
+    );
   };
 
   const categoryLabel = (entry: TierEntry) =>
@@ -1464,6 +1606,7 @@ function ChampionHistoryView() {
   const { t, i18n } = useTranslation();
   const [dateFmt, setDateFmt] = useState(() => loadAppPreferences().dateFormat);
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
+  const [historyWindow, setHistoryWindow] = useState<(typeof TIER_WINDOW_OPTIONS)[number]>(20);
   const location = useLocation();
 
   useEffect(() => {
@@ -1561,6 +1704,10 @@ function ChampionHistoryView() {
     const params = new URLSearchParams(location.search);
     const type = params.get("type") as "champion" | "rune" | "item" | null;
     const name = params.get("name");
+    const windowRaw = Number(params.get("window") ?? "");
+    if (TIER_WINDOW_OPTIONS.includes(windowRaw as (typeof TIER_WINDOW_OPTIONS)[number])) {
+      setHistoryWindow(windowRaw as (typeof TIER_WINDOW_OPTIONS)[number]);
+    }
     if (type && name) {
       setEntityType(type);
       setPrefill({ type, name });
@@ -1628,7 +1775,10 @@ function ChampionHistoryView() {
     if (entityType === "champion") {
       if (!champion) { setHistory([]); return; }
       setLoading(true);
-      invoke<ChampionHistoryEntry[]>("get_champion_history", { championName: champion.name })
+      invoke<ChampionHistoryEntry[]>("get_champion_history", {
+        championName: champion.name,
+        windowSize: historyWindow,
+      })
         .then(setHistory)
         .catch(e => toast.error(String(e)))
         .finally(() => setLoading(false));
@@ -1638,7 +1788,10 @@ function ChampionHistoryView() {
     if (entityType === "rune") {
       if (!selectedRune) { setHistory([]); return; }
       setLoading(true);
-      invoke<ChampionHistoryEntry[]>("get_rune_history", { runeName: selectedRune.name })
+      invoke<ChampionHistoryEntry[]>("get_rune_history", {
+        runeName: selectedRune.name,
+        windowSize: historyWindow,
+      })
         .then(setHistory)
         .catch(e => toast.error(String(e)))
         .finally(() => setLoading(false));
@@ -1648,13 +1801,16 @@ function ChampionHistoryView() {
     if (entityType === "item") {
       if (!selectedItem) { setHistory([]); return; }
       setLoading(true);
-      invoke<ChampionHistoryEntry[]>("get_item_history", { itemName: selectedItem.name })
+      invoke<ChampionHistoryEntry[]>("get_item_history", {
+        itemName: selectedItem.name,
+        windowSize: historyWindow,
+      })
         .then(setHistory)
         .catch(e => toast.error(String(e)))
         .finally(() => setLoading(false));
       return;
     }
-  }, [entityType, champion, selectedRune, selectedItem]);
+  }, [entityType, champion, selectedRune, selectedItem, historyWindow]);
 
   // Fallback для иконок рун/предметов
   const getFallbackIcon = (title: string | null, patchIcon?: string | null): string | null => {
@@ -1876,6 +2032,28 @@ function ChampionHistoryView() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="h-10 w-full justify-between rounded-xl border-border/60 lg:w-52">
+                  {t("tier.windowOption", { count: historyWindow })}
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {TIER_WINDOW_OPTIONS.map((opt) => (
+                  <DropdownMenuItem key={opt} onClick={() => setHistoryWindow(opt)}>
+                    <span className="flex flex-1 items-center gap-2">
+                      {historyWindow === opt ? (
+                        <Circle className="h-3 w-3 fill-green-500 text-green-500" />
+                      ) : (
+                        <span className="inline-block w-3 shrink-0" aria-hidden />
+                      )}
+                      {t("tier.windowOption", { count: opt })}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -2163,8 +2341,13 @@ function resolvePatchNoteLeadIconUrl(
   items: ItemListItem[],
   runes: RuneListItem[],
 ): string | undefined {
+  const isModeCategory =
+    note.category === "ModeArena" ||
+    note.category === "ModeAram" ||
+    note.category === "ModeAramChaos" ||
+    note.category === "ModeAramAugments";
   const direct = cleanUrl(note.image_url);
-  if (direct) return direct;
+  if (direct && !isModeCategory) return direct;
   if (note.category === "Champions") {
     const t = note.title.trim();
     const lower = t.toLowerCase();
@@ -2191,12 +2374,11 @@ function resolvePatchNoteLeadIconUrl(
     const r = findRuneByLooseTitle(note.title, runes);
     return r ? cleanUrl(r.icon_url) : undefined;
   }
-  if (
-    note.category === "ModeArena" ||
-    note.category === "ModeAram" ||
-    note.category === "ModeAramChaos" ||
-    note.category === "ModeAramAugments"
-  ) {
+  if (isModeCategory) {
+    if ((note.icon_candidates?.length ?? 0) > 0) {
+      return undefined;
+    }
+    if (direct) return direct;
     const it = findItemByLooseTitle(note.title, items);
     if (it) return cleanUrl(it.icon_url);
     const t = note.title.trim();
@@ -2239,7 +2421,9 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
   const [changeTypeFilter, setChangeTypeFilter] = useState<string>("All");
-  const { items: skinYoutubeFeed } = useYoutubeFeed(YOUTUBE_CHANNEL_SKINSPOTLIGHTS);
+  const { items: skinYoutubeFeed, err: skinYoutubeFeedError } = useYoutubeFeed(
+    YOUTUBE_CHANNEL_SKINSPOTLIGHTS,
+  );
   useEffect(() => {
     invoke<ChampionListItem[]>("get_all_champions")
       .then(setChampionList)
@@ -2390,7 +2574,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
         {data.patch_notes.length > 0 && (
           <Tabs value={categoryFilter} onValueChange={setCategoryFilter} className="w-full">
             <div className="sticky top-14 z-10 border-b border-border/50 bg-background/90 px-4 py-3 backdrop-blur-md sm:px-6">
-              <div className="overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <ScrollArea className="w-full pb-0.5">
                 <TabsList className="inline-flex h-auto min-h-10 w-max min-w-full flex-nowrap justify-start gap-1 rounded-xl bg-muted/25 p-1 sm:flex-wrap">
                   <TabsTrigger
                     value="All"
@@ -2408,7 +2592,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                     </TabsTrigger>
                   ))}
                 </TabsList>
-              </div>
+              </ScrollArea>
               {availableChangeTypes.length > 1 ? (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {availableChangeTypes.map((type) => (
@@ -2439,7 +2623,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
               <div className="grid gap-4 px-5 py-8 sm:grid-cols-2 sm:px-8 lg:grid-cols-3">
                 {filteredPatchNotes.map((note) => (
                   <div
-                    key={note.id}
+                    key={`${version}-${note.id}`}
                     className="overflow-hidden rounded-xl border border-border/50 bg-muted/10 shadow-sm"
                   >
                     {note.image_url ? (
@@ -2469,6 +2653,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                     <div className="border-t border-border/40 px-3 pb-3 pt-2">
                       <SkinSpotlightEmbed
                         feed={skinYoutubeFeed}
+                        feedError={skinYoutubeFeedError}
                         noteTitle={note.title}
                         champions={championList}
                         searchUrl={`https://www.youtube.com/results?search_query=${encodeURIComponent(
@@ -2500,7 +2685,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                   )}`;
                   return (
                     <div
-                      key={note.id}
+                      key={`${version}-${note.id}`}
                       className="group px-5 py-8 transition-colors hover:bg-muted/20 sm:px-8"
                     >
                       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -2554,6 +2739,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                       </div>
                       <SkinSpotlightEmbed
                         feed={skinYoutubeFeed}
+                        feedError={skinYoutubeFeedError}
                         noteTitle={note.title}
                         champions={championList}
                         searchUrl={ytSearch}
@@ -2564,7 +2750,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                 }
                 return (
                   <div
-                    key={note.id}
+                    key={`${version}-${note.id}`}
                     className="group px-5 py-8 transition-colors hover:bg-muted/20 sm:px-8"
                   >
                     <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

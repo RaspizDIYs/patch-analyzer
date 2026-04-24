@@ -12,6 +12,7 @@
     "patchLine": "Patch {{version}}",
     "downloadPatches": "Download patches",
     "downloadPatchesHint": "Download patches from server",
+    "downloadPatchesFirstRunHint": "Click here to download patches on first launch",
     "downloadPreviousPatches": "Download previous patches",
     "downloadPreviousPatchesHint": "Download previous patches up to {{count}}",
     "downloadPreviousPatchesWarning": "Experimental mode: buff/nerf detection may be inaccurate on older patches and can behave unstably.",
@@ -23,7 +24,15 @@
     "resetDb": "Reset patch notes",
     "resetDbHint": "Remove downloaded patch notes from the local DB (icon catalog and augment cache are kept)",
     "openCommunity": "Community videos",
-    "openCommunityHint": "Vandiril & SkinSpotlights (YouTube)"
+    "openCommunityHint": "Vandiril & SkinSpotlights (YouTube)",
+    "initialBootLabel": "First launch",
+    "initialBootTitle": "Preparing latest patch",
+    "initialBootHint": "Downloading the latest patch and icons. This usually takes up to a minute.",
+    "syncProgressTitle": "Patch sync",
+    "syncProgressCounter": "{{processed}} / {{total}}",
+    "syncProgressPreparing": "Preparing patch queue...",
+    "syncProgressVersion": "Processing: {{version}}",
+    "syncProgressStats": "Downloaded: {{downloaded}} · Skipped: {{skipped}}"
   },
   "lolWiki": {
     "menuHint": "League of Legends Wiki",

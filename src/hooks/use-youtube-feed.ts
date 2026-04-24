@@ -29,7 +29,10 @@ export function useYoutubeFeed(channelId: string | null) {
         if (!cancelled) setItems(list)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setErr(String(e))
+        if (!cancelled) {
+          setItems([])
+          setErr(String(e))
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)

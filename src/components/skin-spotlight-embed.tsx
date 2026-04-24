@@ -13,12 +13,14 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 export function SkinSpotlightEmbed({
   feed,
+  feedError,
   noteTitle,
   champions,
   searchUrl,
   searchLabel,
 }: {
   feed: YoutubeFeedItem[]
+  feedError?: string | null
   noteTitle: string
   champions: ChampionListItem[]
   searchUrl: string
@@ -85,16 +87,30 @@ export function SkinSpotlightEmbed({
 
   if (!videoId) {
     return (
-      <p className="text-xs text-muted-foreground">
-        <a href={searchUrl} target="_blank" rel="noopener noreferrer" className="underline">
-          {searchLabel}
-        </a>
-      </p>
+      <div className="space-y-1.5">
+        {feedError ? <p className="text-xs text-muted-foreground">{feedError}</p> : null}
+        <p className="text-xs text-muted-foreground">
+          <a href={searchUrl} target="_blank" rel="noopener noreferrer" className="underline">
+            {searchLabel}
+          </a>
+        </p>
+      </div>
     )
   }
 
   return (
-    <div className="mt-4 max-w-xl rounded-lg border border-border/50 bg-muted/20 p-3">
+    <div className="mt-4 max-w-xl space-y-2">
+      <div className="overflow-hidden rounded-lg border border-border/50 bg-muted/20">
+        <div className="relative aspect-video w-full">
+          <iframe
+            title={api?.title ?? rssBest?.title ?? noteTitle}
+            className="absolute inset-0 h-full w-full"
+            src={`https://www.youtube.com/embed/${videoId}`}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
+        </div>
+      </div>
       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         <span className="truncate">{api?.title ?? rssBest?.title ?? noteTitle}</span>
         <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="underline">

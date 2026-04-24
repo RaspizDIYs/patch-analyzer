@@ -24,6 +24,8 @@ export type AppPreferences = {
   dateFormat: DateFormatPref;
   lastPatchVersion: string;
   lastPathname: string;
+  hasSeenDownloadHint: boolean;
+  hasCompletedInitialPatchBoot: boolean;
 };
 
 const DEFAULT_PREFS: AppPreferences = {
@@ -39,6 +41,8 @@ const DEFAULT_PREFS: AppPreferences = {
   dateFormat: "relative",
   lastPatchVersion: "",
   lastPathname: "/",
+  hasSeenDownloadHint: false,
+  hasCompletedInitialPatchBoot: false,
 };
 
 function clampScale(n: number): number {

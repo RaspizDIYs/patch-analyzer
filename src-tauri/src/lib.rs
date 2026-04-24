@@ -87,6 +87,16 @@ struct PreviousPatchSavedPayload {
     saved: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct SyncPatchHistoryProgressPayload {
+    version: String,
+    processed: usize,
+    total: usize,
+    downloaded: usize,
+    skipped: usize,
+    saved: bool,
+}
+
 #[tauri::command]
 fn analyze_change_trends(texts: Vec<String>) -> Vec<String> {
     texts
@@ -304,6 +314,7 @@ async fn refresh_augments_catalog_if_needed(
 
 const PATCH_NOT_CACHED: &str = "PATCH_NOT_CACHED";
 const PREVIOUS_PATCH_SAVED_EVENT: &str = "previous_patch_saved";
+const SYNC_PATCH_HISTORY_PROGRESS_EVENT: &str = "sync_patch_history_progress";
 
 async fn get_or_fetch_patch(
     version: &str,
@@ -547,39 +558,85 @@ async fn get_cached_patch_versions(state: tauri::State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
+async fn get_patch_window_versions(
+    window_size: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let limit = window_size.unwrap_or(20).clamp(1, 50) as i64;
+    let versions = state
+        .db
+        .get_patches_newest_versions_first(limit)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|p| p.version)
+        .collect();
+    Ok(versions)
+}
+
+#[tauri::command]
 async fn get_champion_history(
     champion_name: String,
+    window_size: Option<u32>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    state
+    let mut rows = state
         .db
         .get_champion_history(&champion_name)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    filter_history_by_patch_window(&mut rows, window_size, state.db.as_ref()).await?;
+    Ok(rows)
 }
 
 #[tauri::command]
 async fn get_item_history(
     item_name: String,
+    window_size: Option<u32>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    state
+    let mut rows = state
         .db
         .get_item_history(&item_name)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    filter_history_by_patch_window(&mut rows, window_size, state.db.as_ref()).await?;
+    Ok(rows)
 }
 
 #[tauri::command]
 async fn get_rune_history(
     rune_name: String,
+    window_size: Option<u32>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ChampionHistoryEntry>, String> {
-    state
+    let mut rows = state
         .db
         .get_rune_history(&rune_name)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    filter_history_by_patch_window(&mut rows, window_size, state.db.as_ref()).await?;
+    Ok(rows)
+}
+
+async fn filter_history_by_patch_window(
+    rows: &mut Vec<ChampionHistoryEntry>,
+    window_size: Option<u32>,
+    db: &Database,
+) -> Result<(), String> {
+    let Some(size) = window_size else {
+        return Ok(());
+    };
+    let limit = size.clamp(1, 50) as i64;
+    let allowed = db
+        .get_patches_newest_versions_first(limit)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|p| p.version)
+        .collect::<HashSet<_>>();
+    rows.retain(|entry| allowed.contains(&entry.patch_version));
+    Ok(())
 }
 
 #[tauri::command]
@@ -792,11 +849,25 @@ async fn sync_patch_history(
         .map_err(|e| e.to_string())?;
 
     log(&app, "INFO", &format!("Found {} patches to check.", patches_list.len()));
+    let total = patches_list.len();
+    let mut downloaded = 0usize;
+    let mut skipped = 0usize;
+    let _ = app.emit(
+        SYNC_PATCH_HISTORY_PROGRESS_EVENT,
+        SyncPatchHistoryProgressPayload {
+            version: String::new(),
+            processed: 0,
+            total,
+            downloaded,
+            skipped,
+            saved: false,
+        },
+    );
 
-    for version in patches_list {
+    for (idx, version) in patches_list.iter().enumerate() {
         let need_fetch = match state
             .db
-            .get_patch_resolving_with_locale(&version, loc)
+            .get_patch_resolving_with_locale(version, loc)
             .await
             .ok()
             .flatten()
@@ -805,13 +876,14 @@ async fn sync_patch_history(
             None => true,
         };
 
+        let mut saved = false;
         if need_fetch {
             log(
                 &app,
                 "INFO",
                 &format!("Downloading missing patch: {} ...", version),
             );
-            let fetch_result = state.scraper.fetch_current_meta(&version, loc).await;
+            let fetch_result = state.scraper.fetch_current_meta(version, loc).await;
 
             match fetch_result {
                 Ok(mut data) => {
@@ -827,6 +899,8 @@ async fn sync_patch_history(
                         log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
                     } else {
                         log(&app, "SUCCESS", &format!("Saved patch {}", version));
+                        downloaded += 1;
+                        saved = true;
                     }
                 }
                 Err(e) => {
@@ -834,8 +908,36 @@ async fn sync_patch_history(
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        } else {
+            skipped += 1;
         }
+
+        let _ = app.emit(
+            SYNC_PATCH_HISTORY_PROGRESS_EVENT,
+            SyncPatchHistoryProgressPayload {
+                version: version.to_string(),
+                processed: idx + 1,
+                total,
+                downloaded,
+                skipped,
+                saved,
+            },
+        );
     }
+
+    if total == 0 {
+        let _ = app.emit(
+            SYNC_PATCH_HISTORY_PROGRESS_EVENT,
+            SyncPatchHistoryProgressPayload {
+                version: String::new(),
+                processed: 0,
+                total: 0,
+                downloaded: 0,
+                skipped: 0,
+                saved: false,
+            },
+        );
+        }
 
     refresh_augments_catalog_if_needed(
         state.scraper.as_ref(),
@@ -1490,6 +1592,7 @@ pub fn run() {
             analyze_patch,
             get_available_patches,
             get_cached_patch_versions,
+            get_patch_window_versions,
             get_latest_patch_data,
             get_patch_by_version,
             get_champion_history,

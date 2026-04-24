@@ -12,6 +12,7 @@
     "patchLine": "Патч {{version}}",
     "downloadPatches": "Скачать патчи",
     "downloadPatchesHint": "Скачать патчи с сервера",
+    "downloadPatchesFirstRunHint": "Нажми сюда, чтобы загрузить патчи при первом запуске",
     "downloadPreviousPatches": "Скачать предыдущие патчи",
     "downloadPreviousPatchesHint": "Скачать предыдущие патчи до {{count}}",
     "downloadPreviousPatchesWarning": "Тестовый режим: на старых патчах бафы/нерфы могут определяться неточно, возможна нестабильная работа.",
@@ -23,7 +24,15 @@
     "resetDb": "Сброс патч-нотов",
     "resetDbHint": "Удалить загруженные патч-ноты из локальной БД (каталог иконок и кэш аугментов не трогаются)",
     "openCommunity": "Видео сообщества",
-    "openCommunityHint": "Vandiril и SkinSpotlights (YouTube)"
+    "openCommunityHint": "Vandiril и SkinSpotlights (YouTube)",
+    "initialBootLabel": "Первый запуск",
+    "initialBootTitle": "Подготавливаем последний патч",
+    "initialBootHint": "Загружаем актуальный патч и иконки. Обычно это занимает до минуты.",
+    "syncProgressTitle": "Синхронизация патчей",
+    "syncProgressCounter": "{{processed}} / {{total}}",
+    "syncProgressPreparing": "Подготовка очереди патчей...",
+    "syncProgressVersion": "Обрабатывается: {{version}}",
+    "syncProgressStats": "Скачано: {{downloaded}} · Пропущено: {{skipped}}"
   },
   "lolWiki": {
     "menuHint": "League of Legends Wiki",

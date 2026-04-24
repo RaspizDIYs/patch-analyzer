@@ -190,12 +190,16 @@ fn append_flat_mode_style_notes(
     let Ok(li_sel) = Selector::parse("li") else {
         return;
     };
+    let Ok(img_sel) = Selector::parse("img") else {
+        return;
+    };
 
     let Some(inner) = el.select(&white_inner_sel).next() else {
         return;
     };
 
     let mut pending_title: Option<String> = None;
+    let mut pending_icon: Option<String> = None;
 
     for node in inner.children() {
         let Some(child_el) = ElementRef::wrap(node) else {
@@ -206,10 +210,14 @@ fn append_flat_mode_style_notes(
 
         if tag == "h4" && classes.iter().any(|c| *c == "change-detail-title") {
             pending_title = None;
+            pending_icon = None;
             continue;
         }
 
         if tag == "p" {
+            if let Some(img) = child_el.select(&img_sel).next() {
+                pending_icon = img_url_from_element(img);
+            }
             if let Some(st) = child_el.select(&strong_sel).next() {
                 let title_text = st.text().collect::<String>().trim().to_string();
                 if !title_text.is_empty() {
@@ -241,10 +249,17 @@ fn append_flat_mode_style_notes(
                     changes: changes.clone(),
                 }],
             );
+            let category_key = match category {
+                PatchCategory::ModeAramChaos => "aram-chaos",
+                PatchCategory::ModeAram => "aram",
+                PatchCategory::ModeArena => "arena",
+                PatchCategory::Modes => "modes",
+                _ => "mode",
+            };
             notes.push(PatchNoteEntry {
-                id: format!("flat-mode-{}-{}", notes.len(), title),
+                id: format!("flat-mode-{category_key}-{}-{}", notes.len(), title),
                 title,
-                image_url: None,
+                image_url: pending_icon.take(),
                 category: category.clone(),
                 change_type,
                 summary: String::new(),
@@ -1306,6 +1321,22 @@ impl Scraper {
                                 // Case 2: Title (H3 or .change-title) -> New Entry
                                 else if (tag == "h3" || tag == "h4" || classes.contains("change-title")) && 
                                         !classes.contains("change-detail-title") && !classes.contains("ability-title") {
+                                    let h4_looks_like_detail = tag == "h4"
+                                        && current_entry.is_some()
+                                        && !classes.contains("change-title");
+                                    if h4_looks_like_detail {
+                                        if let Some(entry) = current_entry.as_mut() {
+                                            let detail_title = child_el.text().collect::<String>().trim().to_string();
+                                            if !detail_title.is_empty() {
+                                                entry.details.push(ChangeBlock {
+                                                    title: Some(detail_title),
+                                                    icon_url: pending_icon.take(),
+                                                    changes: Vec::new(),
+                                                });
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     
                                     // If we have a completed entry, save it
                                     if let Some(entry) = current_entry.take() {
