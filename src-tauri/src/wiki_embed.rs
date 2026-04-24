@@ -4,6 +4,35 @@ use tauri_plugin_opener::OpenerExt;
 
 pub const WIKI_EMBED_LABEL: &str = "wiki-embed";
 const WIKI_CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const WIKI_EMBED_INIT_SCRIPT: &str = r#"
+(() => {
+  const apply = () => {
+    const html = document.documentElement;
+    const body = document.body;
+    if (!html || !body) return;
+    html.style.overflowX = "hidden";
+    body.style.overflowX = "hidden";
+
+    let style = document.getElementById("patch-analyzer-wiki-scroll-fix");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "patch-analyzer-wiki-scroll-fix";
+      style.textContent = `
+        html, body { overflow-x: hidden !important; }
+        *::-webkit-scrollbar:horizontal {
+          height: 0 !important;
+          max-height: 0 !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  };
+
+  apply();
+  window.addEventListener("load", apply, { once: true });
+  new MutationObserver(apply).observe(document.documentElement, { childList: true, subtree: true });
+})();
+"#;
 
 pub fn is_allowed_wiki_url(url: &Url) -> bool {
     if url.scheme() != "https" {
@@ -43,6 +72,7 @@ pub async fn wiki_embed_open(app: AppHandle, url: String) -> Result<(), String> 
         .title("LoL Wiki")
         .inner_size(1100.0, 800.0)
         .user_agent(WIKI_CHROME_UA)
+        .initialization_script(WIKI_EMBED_INIT_SCRIPT)
         .on_navigation(move |u| {
             if is_allowed_wiki_url(u) {
                 true
