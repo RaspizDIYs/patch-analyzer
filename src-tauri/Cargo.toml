@@ -1,6 +1,6 @@
 [package]
 name = "lol-meta-analyzer"
-version = "1.0.1"
+version = "1.0.2"
 description = "League of Legends Patch Analyzer"
 authors = ["you"]
 edition = "2021"
