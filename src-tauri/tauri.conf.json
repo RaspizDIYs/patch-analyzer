@@ -1,6 +1,6 @@
 {
   "productName": "Patch Analyzer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "identifier": "com.lolmeta.analyzer",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -18,7 +18,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://* http://localhost:* ws://localhost:* wss://localhost:*; img-src 'self' https: http: data: blob: asset: tauri:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'"
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/game_assets_icons/**",
+          "$APPDATA/patch_assets/**"
+        ]
+      },
+      "csp": "default-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://* http://localhost:* ws://localhost:* wss://localhost:*; img-src 'self' https: http://asset.localhost http: data: blob: asset: tauri:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

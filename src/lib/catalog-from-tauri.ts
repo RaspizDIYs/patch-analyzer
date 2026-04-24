@@ -21,7 +21,7 @@ function sourceDisplayUrl(s: IconSourceEntry): string {
   if (!s.url) return "";
   if (s.t === "file" && isTauri()) {
     try {
-      return convertFileSrc(s.url);
+      return convertFileSrc(s.url.replace(/\\/g, "/"));
     } catch {
       return s.url;
     }
@@ -179,6 +179,12 @@ export async function loadItemsRunesHybrid(options?: {
   const fromRunes = await fetchRuneListFromCatalog();
   if (fromItems?.length && fromRunes?.length) {
     return { items: fromItems, runes: fromRunes };
+  }
+  if (isTauri()) {
+    return {
+      items: fromItems ?? [],
+      runes: fromRunes ?? [],
+    };
   }
   const fb = await fetchItemsRunesFromDDragon(options);
   return {

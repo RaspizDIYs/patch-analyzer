@@ -73,7 +73,7 @@ export function SkinSpotlightEmbed({
   }, [ytSearch])
 
   const videoId = api?.id ?? (resolved ? rssBest?.video_id : undefined)
-  const iframeTitle = api?.title ?? rssBest?.title ?? ""
+  const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : searchUrl
 
   if (!resolved) {
     return (
@@ -94,15 +94,12 @@ export function SkinSpotlightEmbed({
   }
 
   return (
-    <div className="mt-4 max-w-xl overflow-hidden rounded-lg border border-border/50 bg-muted/20">
-      <div className="relative aspect-video w-full">
-        <iframe
-          title={iframeTitle}
-          className="absolute inset-0 h-full w-full"
-          src={`https://www.youtube.com/embed/${videoId}`}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
-        />
+    <div className="mt-4 max-w-xl rounded-lg border border-border/50 bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        <span className="truncate">{api?.title ?? rssBest?.title ?? noteTitle}</span>
+        <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="underline">
+          {searchLabel}
+        </a>
       </div>
     </div>
   )

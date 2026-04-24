@@ -24,7 +24,7 @@ export function CommunityPage() {
         </Button>
       </div>
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">{t("community.title")}</h2>
+        <h2 className="text-xl font-semibold tracking-normal">{t("community.title")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("community.subtitle")}</p>
       </div>
       <Tabs defaultValue="vandiril" className="w-full">

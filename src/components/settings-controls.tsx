@@ -26,6 +26,11 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
   const [prefs, setPrefs] = useState<AppPreferences>(() => loadAppPreferences());
   const [dbPath, setDbPath] = useState<string>("");
   const [autostartOn, setAutostartOn] = useState(false);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheStatusJson, setCacheStatusJson] = useState<string>("");
+  const [cacheValidationJson, setCacheValidationJson] = useState<string>("");
+  const [cacheWarmResult, setCacheWarmResult] = useState<string>("");
+  const [cacheError, setCacheError] = useState<string>("");
 
   const refreshPrefs = useCallback(() => {
     setPrefs(loadAppPreferences());
@@ -101,6 +106,70 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
     }
   };
 
+  type CacheStatusPayload = {
+    patch_versions: number;
+    patch_locales: string[];
+    static_catalog_rows: number;
+    patch_asset_files: number;
+    patch_asset_bytes: number;
+    game_asset_files: number;
+    game_asset_bytes: number;
+  };
+
+  type AssetValidationPayload = {
+    checked: number;
+    missing: number;
+    broken_paths: string[];
+  };
+
+  const runCacheStatus = useCallback(async () => {
+    if (!isTauri()) return;
+    const payload = await invoke<CacheStatusPayload>("cache_status");
+    setCacheStatusJson(JSON.stringify(payload, null, 2));
+  }, []);
+
+  const runAssetValidation = useCallback(async () => {
+    if (!isTauri()) return;
+    const payload = await invoke<AssetValidationPayload>("validate_cached_assets");
+    setCacheValidationJson(JSON.stringify(payload, null, 2));
+  }, []);
+
+  const runWarmFullCache = useCallback(async () => {
+    if (!isTauri()) return;
+    await invoke("warm_full_cache");
+    setCacheWarmResult(`ok:${new Date().toISOString()}`);
+    await runCacheStatus();
+    await runAssetValidation();
+  }, [runAssetValidation, runCacheStatus]);
+
+  const runClearAllCachedData = useCallback(async () => {
+    if (!isTauri()) return;
+    await invoke("clear_all_cached_data");
+    setCacheWarmResult(`cleared:${new Date().toISOString()}`);
+    await runCacheStatus();
+    await runAssetValidation();
+  }, [runAssetValidation, runCacheStatus]);
+
+  const runDevDiagnostics = useCallback(async () => {
+    if (!isTauri()) return;
+    setCacheBusy(true);
+    setCacheError("");
+    try {
+      await runCacheStatus();
+      await runAssetValidation();
+    } catch (e) {
+      setCacheError(String(e));
+    } finally {
+      setCacheBusy(false);
+    }
+  }, [runAssetValidation, runCacheStatus]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!import.meta.env.DEV) return;
+    void runDevDiagnostics();
+  }, [runDevDiagnostics]);
+
   return (
     <div className="space-y-6 text-sm">
       <Card className="border-border/60 shadow-sm">
@@ -109,12 +178,12 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <p className="text-sm text-muted-foreground">{t("settings.singleBlockDescription")}</p>
         </CardHeader>
         <CardContent className="space-y-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionInterface")}
           </p>
           <div className="space-y-2">
             <Label>{t("settings.language")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.languageHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.languageHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(["ru", "en"] as const).map((lng) => (
                 <Button
@@ -132,7 +201,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.theme")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.themeHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.themeHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(
                 [
@@ -156,7 +225,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.uiScale")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.uiScaleHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.uiScaleHint")}</p>
             <div className="flex flex-wrap gap-1.5">
               {UI_SCALE_PRESETS.map((pct) => (
                 <Button
@@ -175,7 +244,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.density")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.densityHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.densityHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -196,12 +265,12 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             </div>
           </div>
           <Separator />
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionBehavior")}
           </p>
           <div className="space-y-2">
             <Label>{t("settings.patchDefault")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.patchDefaultHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.patchDefaultHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -224,7 +293,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.startupRoute")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.startupRouteHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.startupRouteHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -245,7 +314,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             </div>
           </div>
           <Separator />
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionWindow")}
           </p>
           <div className="space-y-3">
@@ -270,7 +339,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
                 {t("settings.closeOnXTray")}
               </Button>
             </div>
-            <p className="text-xs leading-relaxed text-muted-foreground">{t("settings.closeOnXHint")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">{t("settings.closeOnXHint")}</p>
           </div>
           <Separator />
           <div className="space-y-3">
@@ -295,12 +364,12 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
                 {t("settings.minimizeToTray")}
               </Button>
             </div>
-            <p className="text-xs leading-relaxed text-muted-foreground">{t("settings.minimizeButtonHint")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">{t("settings.minimizeButtonHint")}</p>
           </div>
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.autostart")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.autostartHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.autostartHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -325,12 +394,12 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             {t("settings.quitApp")}
           </Button>
           <Separator />
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionAccessibility")}
           </p>
           <div className="space-y-2">
             <Label>{t("settings.reducedMotion")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.reducedMotionHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.reducedMotionHint")}</p>
             <div className="flex flex-wrap gap-2">
               {(
                 [
@@ -354,7 +423,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
           <Separator />
           <div className="space-y-2">
             <Label>{t("settings.dateFormat")}</Label>
-            <p className="text-xs text-muted-foreground">{t("settings.dateFormatHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.dateFormatHint")}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -375,27 +444,117 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             </div>
           </div>
           <Separator />
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionData")}
           </p>
           <div className="space-y-3">
             <Label>{t("settings.dataLocation")}</Label>
-            <p className="break-all rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
+            <p className="break-all rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-xs text-muted-foreground">
               {dbPath || "—"}
             </p>
-            <p className="text-xs text-muted-foreground">{t("settings.dataLocationHint")}</p>
+            <p className="text-sm text-muted-foreground">{t("settings.dataLocationHint")}</p>
             <Button type="button" size="sm" variant="secondary" disabled={!dbPath} onClick={() => void onRevealDb()}>
               {t("settings.openInExplorer")}
             </Button>
           </div>
+          {isTauri() && import.meta.env.DEV ? (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <Label>{t("settings.devCacheToolsTitle")}</Label>
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.devCacheToolsHint")}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={cacheBusy}
+                    onClick={() => {
+                      setCacheBusy(true);
+                      setCacheError("");
+                      void runCacheStatus()
+                        .catch((e) => setCacheError(String(e)))
+                        .finally(() => setCacheBusy(false));
+                    }}
+                  >
+                    {t("settings.devCacheActionStatus")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={cacheBusy}
+                    onClick={() => {
+                      setCacheBusy(true);
+                      setCacheError("");
+                      void runAssetValidation()
+                        .catch((e) => setCacheError(String(e)))
+                        .finally(() => setCacheBusy(false));
+                    }}
+                  >
+                    {t("settings.devCacheActionValidate")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={cacheBusy}
+                    onClick={() => {
+                      setCacheBusy(true);
+                      setCacheError("");
+                      void runWarmFullCache()
+                        .catch((e) => setCacheError(String(e)))
+                        .finally(() => setCacheBusy(false));
+                    }}
+                  >
+                    {t("settings.devCacheActionWarm")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    disabled={cacheBusy}
+                    onClick={() => {
+                      setCacheBusy(true);
+                      setCacheError("");
+                      void runClearAllCachedData()
+                        .catch((e) => setCacheError(String(e)))
+                        .finally(() => setCacheBusy(false));
+                    }}
+                  >
+                    {t("settings.devCacheActionClear")}
+                  </Button>
+                </div>
+                {cacheError ? (
+                  <p className="text-sm text-destructive break-all">{cacheError}</p>
+                ) : null}
+                {cacheWarmResult ? (
+                  <p className="text-sm text-muted-foreground break-all">{cacheWarmResult}</p>
+                ) : null}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-muted-foreground">{t("settings.devCacheStatusResponse")}</p>
+                  <pre className="max-h-40 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
+                    {cacheStatusJson || "—"}
+                  </pre>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-muted-foreground">{t("settings.devCacheValidateResponse")}</p>
+                  <pre className="max-h-40 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
+                    {cacheValidationJson || "—"}
+                  </pre>
+                </div>
+              </div>
+            </>
+          ) : null}
           <Separator />
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <p className="text-sm font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             {t("settings.sectionAbout")}
           </p>
-          <div className="space-y-3 text-xs text-muted-foreground">
+          <div className="space-y-3 text-sm text-muted-foreground">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">{t("settings.developer")}</span>
-              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+              <Button variant="link" className="h-auto p-0 text-sm" asChild>
                 <a
                   href="https://github.com/Jab04kin"
                   target="_blank"
@@ -404,7 +563,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
                 >
                   <img
                     src="https://avatars.githubusercontent.com/Jab04kin"
-                    alt=""
+                    alt="@Shpinat avatar"
                     width={24}
                     height={24}
                     className="rounded-full"
@@ -415,7 +574,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">{t("settings.org")}</span>
-              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+              <Button variant="link" className="h-auto p-0 text-sm" asChild>
                 <a href="https://github.com/RaspizDIYs" target="_blank" rel="noreferrer">
                   RaspizDIYs
                 </a>
@@ -423,7 +582,7 @@ export function SettingsControls({ theme, onThemeChange }: Props) {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">{t("settings.community")}</span>
-              <Button variant="link" className="h-auto p-0 text-xs" asChild>
+              <Button variant="link" className="h-auto p-0 text-sm" asChild>
                 <a href="https://discord.gg/dmx5GqHDcN" target="_blank" rel="noreferrer">
                   Discord
                 </a>

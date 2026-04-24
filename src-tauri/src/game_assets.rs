@@ -17,6 +17,10 @@ fn ddragon_item_icon(ver: &str, item_id: &str) -> String {
     format!("{}/cdn/{}/img/item/{}.png", DDRAGON, ver, item_id)
 }
 
+fn ddragon_spell_icon(ver: &str, spell_image_file: &str) -> String {
+    format!("{}/cdn/{}/img/spell/{}", DDRAGON, ver, spell_image_file)
+}
+
 fn cd_item_icon_url(icon_path: &str) -> String {
     if icon_path.contains("Items/Icons2D") || icon_path.contains("items/icons2d") {
         if let Some(name) = icon_path.rsplit('/').next() {
@@ -107,7 +111,8 @@ async fn cache_https_icon_to_dir(
             }
         })
         .collect();
-    let path = dir.join(format!("{}_{}.png", kind, safe));
+    let kind_dir = dir.join(kind);
+    let path = kind_dir.join(format!("{safe}.png"));
     if path.exists() {
         return Some(IconSourceEntry {
             t: "file".into(),
@@ -119,12 +124,23 @@ async fn cache_https_icon_to_dir(
         return None;
     }
     let bytes = resp.bytes().await.ok()?;
-    std::fs::create_dir_all(dir).ok()?;
+    std::fs::create_dir_all(&kind_dir).ok()?;
     std::fs::write(&path, &bytes).ok()?;
     Some(IconSourceEntry {
         t: "file".into(),
         url: Some(path.to_string_lossy().into_owned()),
     })
+}
+
+fn prepend_file_source(icon_sources: &mut Vec<IconSourceEntry>, file_source: Option<IconSourceEntry>) {
+    let Some(f) = file_source else {
+        return;
+    };
+    let Some(file_url) = f.url.as_deref() else {
+        return;
+    };
+    icon_sources.retain(|s| s.url.as_deref() != Some(file_url));
+    icon_sources.insert(0, f);
 }
 
 async fn latest_ddragon_version(client: &reqwest::Client) -> Result<String> {
@@ -286,18 +302,29 @@ pub async fn refresh_game_assets(
             let dd_icon = ddragon_item_icon(&ver, id_s);
             let mut icon_sources = vec![IconSourceEntry {
                 t: "ddragon".into(),
-                url: Some(dd_icon),
+                url: Some(dd_icon.clone()),
             }];
+            if let Some(dir) = icon_cache_dir {
+                let file_icon = cache_https_icon_to_dir(client, dir, "item", id_s, &dd_icon).await;
+                prepend_file_source(&mut icon_sources, file_icon);
+            }
             let mut cd_meta: Option<Value> = None;
             if let Ok(id_n) = id_s.parse::<i64>() {
                 if let Some(cd) = cd_by_id.get(&id_n) {
                     cd_meta = Some(cd.clone());
                     if let Some(p) = cd.get("iconPath").and_then(|x| x.as_str()) {
                         let u = cd_item_icon_url(p);
-                        icon_sources.push(IconSourceEntry {
+                        let entry = IconSourceEntry {
                             t: "cdragon".into(),
                             url: Some(u),
-                        });
+                        };
+                        if let Some(dir) = icon_cache_dir {
+                            if let Some(url) = entry.url.as_ref() {
+                                let file_icon = cache_https_icon_to_dir(client, dir, "item", id_s, url).await;
+                                prepend_file_source(&mut icon_sources, file_icon);
+                            }
+                        }
+                        icon_sources.push(entry);
                     }
                 }
             }
@@ -405,6 +432,14 @@ pub async fn refresh_game_assets(
                         Some(format!("{}/cdn/img/{}", DDRAGON, icon_path))
                     };
                     let stable_id = format!("{}:{}", sk, rid);
+                    let mut icon_sources = vec![IconSourceEntry {
+                        t: "ddragon".into(),
+                        url: url.clone(),
+                    }];
+                    if let (Some(dir), Some(icon_url)) = (icon_cache_dir, url.as_ref()) {
+                        let file_icon = cache_https_icon_to_dir(client, dir, "rune", &stable_id, icon_url).await;
+                        prepend_file_source(&mut icon_sources, file_icon);
+                    }
                     rows.push(StaticCatalogRow {
                         kind: "rune".into(),
                         stable_id,
@@ -412,10 +447,7 @@ pub async fn refresh_game_assets(
                         name_en,
                         riot_augment_id: None,
                         cd_meta: Some(json!({"style": sk, "key": rkey, "id": rid})),
-                        icon_sources: vec![IconSourceEntry {
-                            t: "ddragon".into(),
-                            url,
-                        }],
+                        icon_sources,
                         source: "ddragon".into(),
                     });
                 }
@@ -460,6 +492,13 @@ pub async fn refresh_game_assets(
                     t: "cdragon".into(),
                     url: Some(u),
                 });
+                if let Some(dir) = icon_cache_dir {
+                    let first = icon_sources.first().and_then(|s| s.url.as_ref()).cloned();
+                    if let Some(icon_url) = first {
+                        let file_icon = cache_https_icon_to_dir(client, dir, "augment", &stable_id, &icon_url).await;
+                        prepend_file_source(&mut icon_sources, file_icon);
+                    }
+                }
             }
             rows.push(StaticCatalogRow {
                 kind: "augment".into(),
@@ -471,6 +510,119 @@ pub async fn refresh_game_assets(
                 icon_sources,
                 source: "cdragon".into(),
             });
+        }
+    }
+
+    if let (Some(data_ru), Some(data_en)) = (
+        ru_ch.get("data").and_then(|d| d.as_object()),
+        en_ch.get("data").and_then(|d| d.as_object()),
+    ) {
+        for (key, val_ru) in data_ru {
+            let champ_id = val_ru
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(key)
+                .to_string();
+            let val_en_root = data_en.get(key);
+            let champ_id_en = val_en_root
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&champ_id)
+                .to_string();
+            let ru_detail_url = format!("{}/cdn/{}/data/ru_RU/champion/{}.json", DDRAGON, ver, champ_id);
+            let en_detail_url = format!("{}/cdn/{}/data/en_US/champion/{}.json", DDRAGON, ver, champ_id_en);
+            let ru_detail = fetch_json(client, &ru_detail_url).await.unwrap_or_else(|_| json!({}));
+            let en_detail = fetch_json(client, &en_detail_url).await.unwrap_or_else(|_| json!({}));
+            let ru_data = ru_detail.get("data").and_then(|d| d.get(&champ_id));
+            let en_data = en_detail
+                .get("data")
+                .and_then(|d| d.get(&champ_id_en).or_else(|| d.get(&champ_id)));
+            if let (Some(ru_data), Some(en_data)) = (ru_data, en_data) {
+                let ru_spells = ru_data.get("spells").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+                let en_spells = en_data.get("spells").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+                let spell_len = ru_spells.len().min(en_spells.len());
+                for idx in 0..spell_len {
+                    let rs = &ru_spells[idx];
+                    let es = &en_spells[idx];
+                    let spell_id = rs
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("slot_{}", idx));
+                    let image_file = rs
+                        .get("image")
+                        .and_then(|x| x.get("full"))
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    let mut icon_sources = Vec::new();
+                    if !image_file.is_empty() {
+                        let icon = ddragon_spell_icon(&ver, image_file);
+                        icon_sources.push(IconSourceEntry {
+                            t: "ddragon".into(),
+                            url: Some(icon.clone()),
+                        });
+                        if let Some(dir) = icon_cache_dir {
+                            let stable_id = format!("{}:{}", champ_id, spell_id);
+                            let file_icon =
+                                cache_https_icon_to_dir(client, dir, "champion_ability", &stable_id, &icon).await;
+                            prepend_file_source(&mut icon_sources, file_icon);
+                        }
+                    }
+                    rows.push(StaticCatalogRow {
+                        kind: "champion_ability".into(),
+                        stable_id: format!("{}:{}", champ_id, spell_id),
+                        name_ru: rs.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name_en: es.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        riot_augment_id: None,
+                        cd_meta: Some(json!({"champion_id": champ_id, "slot": idx, "ability_id": spell_id})),
+                        icon_sources,
+                        source: "ddragon".into(),
+                    });
+                }
+
+                if let (Some(ru_passive), Some(en_passive)) =
+                    (ru_data.get("passive"), en_data.get("passive"))
+                {
+                    let image_file = ru_passive
+                        .get("image")
+                        .and_then(|x| x.get("full"))
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    let mut icon_sources = Vec::new();
+                    if !image_file.is_empty() {
+                        let icon = ddragon_spell_icon(&ver, image_file);
+                        icon_sources.push(IconSourceEntry {
+                            t: "ddragon".into(),
+                            url: Some(icon.clone()),
+                        });
+                        if let Some(dir) = icon_cache_dir {
+                            let stable_id = format!("{}:passive", champ_id);
+                            let file_icon =
+                                cache_https_icon_to_dir(client, dir, "champion_ability", &stable_id, &icon).await;
+                            prepend_file_source(&mut icon_sources, file_icon);
+                        }
+                    }
+                    rows.push(StaticCatalogRow {
+                        kind: "champion_ability".into(),
+                        stable_id: format!("{}:passive", champ_id),
+                        name_ru: ru_passive
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        name_en: en_passive
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        riot_augment_id: None,
+                        cd_meta: Some(json!({"champion_id": champ_id, "slot": -1, "ability_id": "passive"})),
+                        icon_sources,
+                        source: "ddragon".into(),
+                    });
+                }
+            }
         }
     }
 

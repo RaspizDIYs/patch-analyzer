@@ -10,6 +10,7 @@ use crate::models::{
     PatchData, PatchNoteEntry,
 };
 use crate::patch_version::ddragon_pair_to_display;
+use crate::patch_change_trend::analyze_change_trend;
 use chrono::Utc;
 use regex::Regex;
 
@@ -232,8 +233,14 @@ fn append_flat_mode_style_notes(
             if changes.is_empty() {
                 continue;
             }
-            let detail_text = changes.join(" ");
-            let change_type = scraper.determine_change_type(&detail_text);
+            let change_type = scraper.determine_change_type(
+                "",
+                &[ChangeBlock {
+                    title: None,
+                    icon_url: None,
+                    changes: changes.clone(),
+                }],
+            );
             notes.push(PatchNoteEntry {
                 id: format!("flat-mode-{}-{}", notes.len(), title),
                 title,
@@ -974,7 +981,7 @@ impl Scraper {
         false
     }
 
-    pub async fn fetch_available_patches(&self) -> Result<Vec<String>> {
+    pub async fn fetch_available_patches_with_limit(&self, limit: usize) -> Result<Vec<String>> {
         // Используем патчи из DDragon для согласования с форматом статистики
         let ver_url = "https://ddragon.leagueoflegends.com/api/versions.json";
         let mut patches = Vec::new();
@@ -1017,10 +1024,14 @@ impl Scraper {
             if major_a != major_b { major_b.cmp(&major_a) } else { minor_b.cmp(&minor_a) }
         });
 
-        // Ограничиваем до 20 последних патчей
-        patches.truncate(20);
+        let safe_limit = limit.clamp(1, 100);
+        patches.truncate(safe_limit);
 
         Ok(patches)
+    }
+
+    pub async fn fetch_available_patches(&self) -> Result<Vec<String>> {
+        self.fetch_available_patches_with_limit(20).await
     }
 
     pub async fn fetch_current_meta(&self, patch_version: &str, patch_notes_locale: &str) -> Result<PatchData> {
@@ -1367,14 +1378,7 @@ impl Scraper {
                         
                         // Push the final entry from this block
                         if let Some(mut entry) = current_entry {
-                            let detail_text = entry
-                                .details
-                                .iter()
-                                .flat_map(|b| b.changes.iter().cloned())
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            let all_text = format!("{} {}", entry.summary, detail_text);
-                            entry.change_type = self.determine_change_type(all_text.trim());
+                            entry.change_type = self.determine_change_type(&entry.summary, &entry.details);
                             notes.push(entry);
                         }
                     }
@@ -1433,7 +1437,15 @@ impl Scraper {
 
     async fn scrape_metasrc(&self) -> Result<Vec<ChampionStats>> { Ok(vec![]) }
 
-    fn determine_change_type(&self, text: &str) -> ChangeType {
+    fn determine_change_type(&self, summary: &str, details: &[ChangeBlock]) -> ChangeType {
+        let detail_text = details
+            .iter()
+            .flat_map(|b| b.changes.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("{} {}", summary, detail_text);
+        let text = text.trim();
+
         if text.is_empty() {
             return ChangeType::Adjusted;
         }
@@ -1445,18 +1457,42 @@ impl Scraper {
             r"(?i)(добавляем|добавлен(о|ы)?|впервые|новый\s|новая\s|новое\s|новые\s|теперь доступн|появ(ится|ились|ятся)|introducing|we are adding|we're adding|new to league)",
         )
         .unwrap();
-        let buff_re = Regex::new(r"(?i)(увеличен|усилен|added|increased|дополнительный урон)").unwrap();
-        let nerf_re = Regex::new(r"(?i)(уменьшен|ослаблен|decreased)").unwrap();
         if removal_re.is_match(text) {
             ChangeType::Removed
         } else if new_re.is_match(text) {
             ChangeType::New
-        } else if buff_re.is_match(text) {
-            ChangeType::Buff
-        } else if nerf_re.is_match(text) {
-            ChangeType::Nerf
         } else {
-            ChangeType::Adjusted
+            let mut has_buff = false;
+            let mut has_nerf = false;
+
+            for trend in details
+                .iter()
+                .flat_map(|b| b.changes.iter())
+                .map(|s| analyze_change_trend(s))
+            {
+                match trend {
+                    1 => has_buff = true,
+                    -1 => has_nerf = true,
+                    _ => {}
+                }
+                if has_buff && has_nerf {
+                    break;
+                }
+            }
+
+            if !(has_buff || has_nerf) {
+                match analyze_change_trend(text) {
+                    1 => has_buff = true,
+                    -1 => has_nerf = true,
+                    _ => {}
+                }
+            }
+
+            match (has_buff, has_nerf) {
+                (true, false) => ChangeType::Buff,
+                (false, true) => ChangeType::Nerf,
+                _ => ChangeType::Adjusted,
+            }
         }
     }
     
@@ -1702,5 +1738,63 @@ mod tests {
 </div>"###;
         let notes = s.parse_riot_patch_notes_html(html, &non_empty_champion_slugs(), "ru");
         assert_eq!(notes[0].change_type, ChangeType::Removed);
+    }
+
+    fn detail_block(changes: &[&str]) -> Vec<ChangeBlock> {
+        vec![ChangeBlock {
+            title: None,
+            icon_url: None,
+            changes: changes.iter().map(|s| s.to_string()).collect(),
+        }]
+    }
+
+    #[test]
+    fn classify_mundo_monster_caps_as_nerf() {
+        let s = Scraper::new().unwrap();
+        let ty = s.determine_change_type(
+            "Снижаем скорость зачистки леса.",
+            &detail_block(&[
+                "Максимальный урон монстрам: 300/375/450/525/600 → 250/325/400/475/550",
+                "Максимальный урон монстрам: 200% → 140%",
+            ]),
+        );
+        assert_eq!(ty, ChangeType::Nerf);
+    }
+
+    #[test]
+    fn classify_karma_stats_and_mana_as_nerf() {
+        let s = Scraper::new().unwrap();
+        let ty = s.determine_change_type(
+            "Ослабим E и основные показатели.",
+            &detail_block(&[
+                "Сила атаки: 51 → 49",
+                "Прирост силы атаки: 3,3 → 3,0",
+                "Затраты маны: 50/55/60/65/70 → 60/65/70/75/80",
+            ]),
+        );
+        assert_eq!(ty, ChangeType::Nerf);
+    }
+
+    #[test]
+    fn classify_lillia_monster_cap_as_buff() {
+        let s = Scraper::new().unwrap();
+        let ty = s.determine_change_type(
+            "Усиливаем зачистку леса.",
+            &detail_block(&["Максимальный урон монстрам: 65 → 70–180 (зависит от уровня)"]),
+        );
+        assert_eq!(ty, ChangeType::Buff);
+    }
+
+    #[test]
+    fn classify_lucian_cooldown_and_mana_as_buff() {
+        let s = Scraper::new().unwrap();
+        let ty = s.determine_change_type(
+            "Сократим перезарядку и затраты маны.",
+            &detail_block(&[
+                "Перезарядка: 18/17/16/15/14 секунд → 16/15,5/15/14,5/14 секунд",
+                "Затраты маны: 40/30/20/10/0 → 32/24/16/8/0",
+            ]),
+        );
+        assert_eq!(ty, ChangeType::Buff);
     }
 }

@@ -173,7 +173,7 @@ export function YoutubeChannelPanel({
                         type="button"
                         onClick={() => setSelectedId(v.video_id)}
                         className={cn(
-                          "flex w-full gap-3 rounded-lg border p-2 text-left transition-colors",
+                          "flex w-full gap-3 rounded-lg border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                           v.video_id === selected.video_id
                             ? "border-primary/50 bg-primary/5"
                             : "border-transparent hover:bg-muted/50",
@@ -187,7 +187,7 @@ export function YoutubeChannelPanel({
                         <span className="min-w-0 flex-1">
                           <span className="line-clamp-2 text-sm font-medium leading-snug">{v.title}</span>
                           {matchScore > 0 && (
-                            <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
                               {t("community.matchHint")}
                             </span>
                           )}

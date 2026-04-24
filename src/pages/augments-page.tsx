@@ -22,12 +22,34 @@ import { wikiAugmentToPlain } from "@/lib/wiki-augment-plain"
 import { cn } from "@/lib/utils"
 import type { IconSourceEntry, StaticCatalogRow } from "@/lib/catalog-from-tauri"
 import type { AugmentsBundledFile, BundledAugmentEntry } from "@/types/bundled-augments"
+import augmentRuAliasesData from "@/data/augment_ru_aliases.json"
+import augmentRuOverridesData from "@/data/augments-ru-overrides.json"
 
 type BundleLoad = "loading" | "ready" | "error"
 
 type PoolTab = "arena" | "mayhem"
 type SortField = "name" | "tier" | null
 type SortDirection = "asc" | "desc"
+
+type AugmentAliasData = { aliases?: Record<string, string> }
+type AugmentOverrideEntry = {
+  key: string
+  pool: PoolTab
+  title_en: string
+  title_ru: string
+  description_en: string
+  description_ru: string
+  notes_en: string
+  notes_ru: string
+  tier_en: string
+  tier_ru: string
+  set_en: string
+  set_ru: string
+  riot_augment_id?: string | null
+}
+type AugmentOverridesData = {
+  entries?: AugmentOverrideEntry[]
+}
 
 function augmentSetOneChunk(s: string): string {
   let t = s.trim()
@@ -64,10 +86,37 @@ function normAugKey(s: string): string {
 
 function augmentTierRank(tier: string): number {
   const key = tier.trim().toLowerCase()
-  if (key === "prismatic") return 3
-  if (key === "gold") return 2
-  if (key === "silver") return 1
+  if (key === "prismatic" || key === "призматический") return 3
+  if (key === "gold" || key === "золотой") return 2
+  if (key === "silver" || key === "серебряный") return 1
   return 0
+}
+
+function normalizeRuText(raw: string): string {
+  let out = raw
+  let guard = 0
+  while (/\{\{[^{}]+\}\}/.test(out) && guard < 80) {
+    guard += 1
+    out = out.replace(/\{\{[^{}]+\}\}/g, " ")
+  }
+  return out
+    .replace(/(?:\d+\s*px\|link=|link=)/gi, " ")
+    .replace(/\bif\b/gi, " ")
+    .replace(/\bcast\b/gi, " ")
+    .replace(/\.{2,}/g, ". ")
+    .replace(/\s+\.\s+/g, ". ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\bулучшение\b/gi, "аугментация")
+    .replace(/\bдополнение\b/gi, "аугментация")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/([.,;:!?]){2,}/g, "$1")
+    .trim()
+}
+
+function normalizeRuTextWithFallback(raw: string, fallback: string): string {
+  const cleaned = normalizeRuText(raw)
+  if (cleaned.length >= 8) return cleaned
+  return normalizeRuText(fallback)
 }
 
 function matchStaticAugment(
@@ -77,10 +126,13 @@ function matchStaticAugment(
 ): StaticCatalogRow | undefined {
   const k = normAugKey(row.title)
   if (!k) return undefined
+  const aliasToEn = (augmentRuAliasesData as AugmentAliasData).aliases ?? {}
+  const mappedEn = aliasToEn[k] ? normAugKey(aliasToEn[k] ?? "") : ""
+  const keys = mappedEn && mappedEn !== k ? [k, mappedEn] : [k]
   return rows.find((r) => {
     const en = normAugKey(r.name_en)
     const ru = normAugKey(r.name_ru)
-    if (en !== k && ru !== k) return false
+    if (!keys.includes(en) && !keys.includes(ru)) return false
     const raw = r.cd_meta?.pool
     const metaPool = typeof raw === "string" ? raw : ""
     if (metaPool && metaPool !== "unknown" && metaPool !== pool) {
@@ -94,7 +146,7 @@ function sourceToUrl(s: IconSourceEntry): string {
   if (!s.url) return ""
   if (s.t === "file" && isTauri()) {
     try {
-      return convertFileSrc(s.url)
+      return convertFileSrc(s.url.replace(/\\/g, "/"))
     } catch {
       return s.url
     }
@@ -156,6 +208,39 @@ export function AugmentsPage() {
   const [sortField, setSortField] = useState<SortField>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc")
   const showSetColumn = pool === "mayhem"
+  const aliasToEn = useMemo(
+    () => (augmentRuAliasesData as AugmentAliasData).aliases ?? {},
+    [],
+  )
+  const aliasToRu = useMemo(() => {
+    const out = new Map<string, string>()
+    for (const [ru, en] of Object.entries(aliasToEn)) {
+      const kEn = normAugKey(en)
+      const kRu = normAugKey(ru)
+      if (kEn && kRu && !out.has(kEn)) {
+        out.set(kEn, ru)
+      }
+    }
+    return out
+  }, [aliasToEn])
+  const overridesByKey = useMemo(() => {
+    const fileData = augmentRuOverridesData as AugmentOverridesData
+    const map = new Map<string, AugmentOverrideEntry>()
+    for (const entry of fileData.entries ?? []) {
+      map.set(entry.key, entry)
+    }
+    return map
+  }, [])
+  const overridesByRiotId = useMemo(() => {
+    const fileData = augmentRuOverridesData as AugmentOverridesData
+    const map = new Map<string, AugmentOverrideEntry>()
+    for (const entry of fileData.entries ?? []) {
+      if (entry.riot_augment_id) {
+        map.set(entry.riot_augment_id, entry)
+      }
+    }
+    return map
+  }, [])
   const nameCollator = useMemo(
     () =>
       new Intl.Collator(i18n.resolvedLanguage === "ru" ? "ru" : "en", {
@@ -207,12 +292,40 @@ export function AugmentsPage() {
   const filteredSorted = useMemo(() => {
     const rows = entries.map((row) => {
       const cat = matchStaticAugment(row, pool, staticAugments)
-      const localizedTitle =
-        i18n.resolvedLanguage === "ru" && cat?.name_ru.trim() ? cat.name_ru : row.title
+      const rowNorm = normAugKey(row.title)
+      const aliasEnNorm = aliasToEn[rowNorm] ? normAugKey(aliasToEn[rowNorm] ?? "") : ""
+      const ruAlias = aliasToRu.get(aliasEnNorm || rowNorm) ?? aliasToRu.get(rowNorm) ?? ""
+      const overrideKey = `${pool}::${row.title}`
+      const overrideByKey = overridesByKey.get(overrideKey)
+      const overrideByRiotId = row.riot_augment_id ? overridesByRiotId.get(row.riot_augment_id) : undefined
+      const override = overrideByKey ?? overrideByRiotId
+      const useRu = i18n.resolvedLanguage === "ru"
+      const fallbackDescEn = wikiAugmentToPlain(row.description_html, { maxChars: 1200 })
+      const fallbackNotesEn = wikiAugmentToPlain(row.notes_html ?? "", { maxChars: 500 })
+      const fallbackSet = augmentSetDisplay(row.set_label)
+      const localizedTitle = useRu
+        ? (override?.title_ru || cat?.name_ru.trim() || ruAlias || row.title)
+        : (override?.title_en || cat?.name_en.trim() || row.title)
+      const localizedDesc = useRu
+        ? normalizeRuTextWithFallback(override?.description_ru || "", fallbackDescEn)
+        : (override?.description_en || fallbackDescEn)
+      const localizedNotes = useRu
+        ? normalizeRuTextWithFallback(override?.notes_ru || "", fallbackNotesEn)
+        : (override?.notes_en || fallbackNotesEn)
+      const localizedTier = useRu
+        ? (override?.tier_ru || (row.tier.toLowerCase() === "silver" ? "Серебряный" : row.tier.toLowerCase() === "gold" ? "Золотой" : row.tier.toLowerCase() === "prismatic" ? "Призматический" : row.tier))
+        : (override?.tier_en || row.tier)
+      const localizedSet = useRu
+        ? (override?.set_ru || fallbackSet)
+        : (override?.set_en || fallbackSet)
       return {
         row,
         cat,
         localizedTitle,
+        localizedDesc,
+        localizedNotes,
+        localizedTier,
+        localizedSet,
         titleRu: cat?.name_ru.toLowerCase() ?? "",
         titleEn: cat?.name_en.toLowerCase() ?? "",
       }
@@ -220,14 +333,14 @@ export function AugmentsPage() {
 
     const s = q.trim().toLowerCase()
     const filtered = s
-      ? rows.filter(({ row, titleRu, titleEn }) => {
-        const tier = row.tier.toLowerCase()
+      ? rows.filter(({ row, titleRu, titleEn, localizedTitle, localizedDesc, localizedNotes, localizedTier, localizedSet }) => {
+        const tier = localizedTier.toLowerCase()
         const setL = showSetColumn
-          ? `${augmentSetDisplay(row.set_label)} ${row.set_label}`.toLowerCase()
+          ? `${localizedSet} ${row.set_label}`.toLowerCase()
           : ""
-        const title = row.title.toLowerCase()
-        const effect = wikiAugmentToPlain(row.description_html).toLowerCase()
-        const notes = wikiAugmentToPlain(row.notes_html ?? "").toLowerCase()
+        const title = localizedTitle.toLowerCase()
+        const effect = localizedDesc.toLowerCase()
+        const notes = localizedNotes.toLowerCase()
         return (
           title.includes(s) ||
           titleRu.includes(s) ||
@@ -257,6 +370,8 @@ export function AugmentsPage() {
   }, [
     entries,
     i18n.resolvedLanguage,
+    aliasToEn,
+    aliasToRu,
     nameCollator,
     pool,
     q,
@@ -264,6 +379,8 @@ export function AugmentsPage() {
     sortDirection,
     sortField,
     staticAugments,
+    overridesByKey,
+    overridesByRiotId,
   ])
 
   const toggleSort = useCallback(
@@ -315,7 +432,7 @@ export function AugmentsPage() {
               {t("settings.back")}
             </Link>
           </Button>
-          <h2 className="text-xl font-semibold tracking-tight">{t("augments.title")}</h2>
+          <h2 className="text-xl font-semibold tracking-normal">{t("augments.title")}</h2>
         </div>
       </div>
 
@@ -367,7 +484,7 @@ export function AugmentsPage() {
                     aria-label={t("augments.searchPlaceholder")}
                   />
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   {t("augments.shownCount", { n: filteredSorted.length, total: entries.length })}
                 </p>
               </div>
@@ -405,11 +522,9 @@ export function AugmentsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredSorted.map(({ row, cat, localizedTitle }, ix: number) => {
+                    {filteredSorted.map(({ row, cat, localizedTitle, localizedDesc, localizedNotes, localizedTier, localizedSet }, ix: number) => {
                       const iconUrls = iconUrlsForRow(row, cat)
                       const key = `${row.pool}-${row.title}-${ix}`
-                      const descPlain = wikiAugmentToPlain(row.description_html, { maxChars: 1200 })
-                      const notesPlain = wikiAugmentToPlain(row.notes_html ?? "", { maxChars: 500 })
                       return (
                         <TableRow key={key}>
                           <TableCell className="align-top">
@@ -419,11 +534,11 @@ export function AugmentsPage() {
                             <span className="font-medium leading-snug text-foreground">{localizedTitle}</span>
                           </TableCell>
                           <TableCell className="align-top text-sm">
-                            {descPlain.trim() ? (
+                            {localizedDesc.trim() ? (
                               <div className="space-y-1">
-                                <p className="max-w-none text-sm leading-relaxed text-foreground">{descPlain}</p>
-                                {notesPlain.trim() ? (
-                                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{notesPlain}</p>
+                                <p className="max-w-none text-sm leading-relaxed text-foreground">{localizedDesc}</p>
+                                {localizedNotes.trim() ? (
+                                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{localizedNotes}</p>
                                 ) : null}
                               </div>
                             ) : (
@@ -431,9 +546,9 @@ export function AugmentsPage() {
                             )}
                           </TableCell>
                           <TableCell className="align-top">
-                            {row.tier.trim() ? (
+                            {localizedTier.trim() ? (
                               <Badge variant="secondary" className="whitespace-nowrap font-normal">
-                                {row.tier}
+                                {localizedTier}
                               </Badge>
                             ) : (
                               <span className="text-sm text-muted-foreground">—</span>
@@ -444,10 +559,10 @@ export function AugmentsPage() {
                               <span
                                 className={cn(
                                   "text-sm",
-                                  !augmentSetDisplay(row.set_label) && "text-muted-foreground",
+                                  !localizedSet && "text-muted-foreground",
                                 )}
                               >
-                                {augmentSetDisplay(row.set_label) || "—"}
+                                {localizedSet || "—"}
                               </span>
                             </TableCell>
                           ) : null}

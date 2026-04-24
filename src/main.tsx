@@ -18,6 +18,13 @@ function hideBootLoader() {
   window.setTimeout(() => loader.remove(), 260);
 }
 
+const failSafeHideTimer = window.setTimeout(() => hideBootLoader(), 8000);
+
+function finishBootPhase() {
+  window.clearTimeout(failSafeHideTimer);
+  hideBootLoader();
+}
+
 if (isTauri() && import.meta.env.DEV) {
   document.addEventListener(
     "keydown",
@@ -47,4 +54,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>,
 );
 
-requestAnimationFrame(() => hideBootLoader());
+window.addEventListener("error", () => finishBootPhase(), { once: true });
+window.addEventListener("unhandledrejection", () => finishBootPhase(), { once: true });
+requestAnimationFrame(() => finishBootPhase());

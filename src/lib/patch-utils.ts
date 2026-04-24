@@ -1,6 +1,10 @@
 import type { TFunction } from "i18next";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 
+function normalizeLocalPath(path: string): string {
+  return path.replace(/\\/g, "/")
+}
+
 /** Совпадает с db::WIKI_AUGMENT_DETAIL_TITLE (Rust). */
 export const WIKI_AUGMENT_DETAIL_TITLE = "League Wiki"
 
@@ -44,17 +48,25 @@ export function displayPatchToDdragonMajorMinor(display: string): { major: numbe
 
 export function cleanUrl(url?: string | null) {
   if (!url) return undefined
-  const u = url.trim()
+  let u = url.trim()
+  if (/%[0-9A-Fa-f]{2}/.test(u)) {
+    try {
+      u = decodeURIComponent(u)
+    } catch {
+      /* noop */
+    }
+  }
   const isWindowsAbsPath = /^[a-zA-Z]:[\\/]/.test(u)
   const isFileUrl = u.startsWith("file://")
 
   if (isWindowsAbsPath || isFileUrl) {
     try {
       const path = isFileUrl ? decodeURIComponent(u.replace(/^file:\/\/\/?/, "")) : u
+      const normalized = normalizeLocalPath(path)
       if (isTauri()) {
-        return convertFileSrc(path)
+        return convertFileSrc(normalized)
       }
-      return `file:///${path.replace(/\\/g, "/")}`
+      return `file:///${normalized}`
     } catch {
       return u
     }
@@ -79,11 +91,11 @@ export function cleanUrl(url?: string | null) {
 export function highlightSpecialTags(text: string): string {
   text = text.replace(
     /(НОВОЕ|Новое|NEW)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold text-[11px] align-middle dark:bg-emerald-950 dark:text-emerald-300">$1</span>'
+    '<span class="inline px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold text-xs align-middle dark:bg-emerald-950 dark:text-emerald-300">$1</span>'
   )
   text = text.replace(
     /(УДАЛЕНО|Удалено|REMOVED)/g,
-    '<span class="inline px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold text-[11px] align-middle dark:bg-red-950 dark:text-red-300">$1</span>'
+    '<span class="inline px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold text-xs align-middle dark:bg-red-950 dark:text-red-300">$1</span>'
   )
   return text
 }

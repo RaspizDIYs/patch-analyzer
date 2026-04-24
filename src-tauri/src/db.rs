@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::ChampionHistoryEntry;
@@ -61,6 +61,14 @@ fn split_tier_set_from_summary(summary: &str) -> (String, String) {
         (parts[0].to_string(), String::new())
     } else {
         (parts[0].to_string(), parts[1..].join(" · "))
+    }
+}
+
+fn normalize_patch_locale(locale: &str) -> &'static str {
+    if locale.eq_ignore_ascii_case("en") {
+        "en"
+    } else {
+        "ru"
     }
 }
 
@@ -198,22 +206,25 @@ fn wiki_augment_lookup_map_merged(
     wiki_catalog_ru: &[PatchNoteEntry],
 ) -> HashMap<String, (Option<String>, String)> {
     let mut map = wiki_augment_lookup_map(wiki_catalog_en);
-    if wiki_catalog_en.is_empty() {
-        return map;
-    }
-    for (i, ru) in wiki_catalog_ru.iter().enumerate() {
+    for ru in wiki_catalog_ru.iter() {
         if ru.category != PatchCategory::ModeAramAugments {
             continue;
         }
-        let Some(en) = wiki_catalog_en.get(i) else {
-            break;
-        };
         let k = normalize_augment_lookup_key(&ru.title);
         if k.len() < 2 {
             continue;
         }
-        let text = wiki_catalog_effect_text(en);
-        let img = en.image_url.clone();
+        let ru_text = wiki_catalog_effect_text(ru);
+        let prev = map.get(&k).cloned();
+        let text = if ru_text.trim().is_empty() {
+            prev.as_ref().map(|(_, t)| t.clone()).unwrap_or_default()
+        } else {
+            ru_text
+        };
+        let img = ru
+            .image_url
+            .clone()
+            .or_else(|| prev.and_then(|(i, _)| i));
         map.insert(k, (img, text));
     }
     map
@@ -330,7 +341,12 @@ fn deserialize_stored_json(data: &str) -> Option<PatchJsonContent> {
     None
 }
 
-fn patch_data_from_stored_row(ver: String, data: &str, date_str: &str) -> Result<PatchData> {
+fn patch_data_from_stored_row(
+    ver: String,
+    data: &str,
+    date_str: &str,
+    locale: Option<&str>,
+) -> Result<PatchData> {
     let content: PatchJsonContent = match serde_json::from_str(data) {
         Ok(c) => c,
         Err(_) => {
@@ -352,7 +368,9 @@ fn patch_data_from_stored_row(ver: String, data: &str, date_str: &str) -> Result
         champions: content.champions,
         patch_notes: content.patch_notes,
         banner_url: content.banner_url,
-        patch_notes_locale: content.patch_notes_locale,
+        patch_notes_locale: content
+            .patch_notes_locale
+            .or_else(|| locale.map(|s| normalize_patch_locale(s).to_string())),
     })
 }
 
@@ -377,15 +395,18 @@ impl Database {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS patches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                version TEXT NOT NULL UNIQUE,
+                version TEXT NOT NULL,
+                patch_notes_locale TEXT NOT NULL DEFAULT 'ru',
                 fetched_at TEXT NOT NULL,
-                data_json TEXT NOT NULL
+                data_json TEXT NOT NULL,
+                PRIMARY KEY (version, patch_notes_locale)
             );
             "#,
         )
         .execute(&pool)
         .await?;
+
+        Self::ensure_patches_schema(&pool).await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_patches_fetched_at ON patches (fetched_at DESC);"#,
@@ -459,6 +480,72 @@ impl Database {
         Ok(Self { pool })
     }
 
+    async fn ensure_patches_schema(pool: &SqlitePool) -> Result<()> {
+        let columns: Vec<String> = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+            "PRAGMA table_info(patches)",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, name, _, _, _, _)| name)
+        .collect();
+        let has_locale = columns.iter().any(|c| c == "patch_notes_locale");
+        let has_id = columns.iter().any(|c| c == "id");
+        if has_locale && !has_id {
+            return Ok(());
+        }
+
+        sqlx::query("DROP TABLE IF EXISTS patches_new")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS patches_legacy")
+            .execute(pool)
+            .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE patches_new (
+                version TEXT NOT NULL,
+                patch_notes_locale TEXT NOT NULL DEFAULT 'ru',
+                fetched_at TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                PRIMARY KEY (version, patch_notes_locale)
+            );
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO patches_new (version, patch_notes_locale, fetched_at, data_json)
+            SELECT
+                version,
+                COALESCE(
+                    NULLIF(json_extract(data_json, '$.patch_notes_locale'), ''),
+                    'ru'
+                ) AS patch_notes_locale,
+                fetched_at,
+                data_json
+            FROM patches
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("ALTER TABLE patches RENAME TO patches_legacy")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE patches_new RENAME TO patches")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE patches_legacy")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     fn prefers_modern_display_patch(version: &str) -> bool {
         version
             .split('.')
@@ -469,29 +556,34 @@ impl Database {
     }
 
     fn is_better_equivalent_patch_row(
-        candidate: &(String, String, String),
-        current: &(String, String, String),
+        candidate: &(String, String, String, String),
+        current: &(String, String, String, String),
     ) -> bool {
         let candidate_modern = Self::prefers_modern_display_patch(&candidate.0);
         let current_modern = Self::prefers_modern_display_patch(&current.0);
         if candidate_modern != current_modern {
             return candidate_modern;
         }
-        if candidate.2 != current.2 {
-            return candidate.2 > current.2;
+        if candidate.3 != current.3 {
+            return candidate.3 > current.3;
         }
         cmp_display_patch(&candidate.0, &current.0).is_gt()
     }
 
     /// Строки патчей в порядке **убывания игровой версии** (не по времени загрузки),
     /// с дедупликацией эквивалентных отображений одной версии (например, 16.8 и 26.8).
-    async fn fetch_version_ordered_rows(&self, limit: i64) -> Result<Vec<(String, String, String)>> {
-        let all_rows: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT version, data_json, fetched_at FROM patches")
+    async fn fetch_version_ordered_rows(
+        &self,
+        limit: Option<i64>,
+    ) -> Result<Vec<(String, String, String, String)>> {
+        let all_rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT version, patch_notes_locale, data_json, fetched_at FROM patches",
+        )
             .fetch_all(&self.pool)
             .await?;
 
-        let mut by_equivalent: HashMap<(i32, i32), (String, String, String)> = HashMap::new();
+        let mut by_equivalent: HashMap<(i32, i32), (String, String, String, String)> =
+            HashMap::new();
         let mut passthrough = Vec::new();
 
         for row in all_rows {
@@ -511,11 +603,13 @@ impl Database {
             }
         }
 
-        let mut out: Vec<(String, String, String)> = by_equivalent.into_values().collect();
+        let mut out: Vec<(String, String, String, String)> = by_equivalent.into_values().collect();
         out.extend(passthrough);
-        out.sort_by(|a, b| cmp_display_patch(&b.0, &a.0).then_with(|| b.2.cmp(&a.2)));
-        if limit > 0 && (out.len() as i64) > limit {
-            out.truncate(limit as usize);
+        out.sort_by(|a, b| cmp_display_patch(&b.0, &a.0).then_with(|| b.3.cmp(&a.3)));
+        if let Some(limit) = limit {
+            if limit > 0 && (out.len() as i64) > limit {
+                out.truncate(limit as usize);
+            }
         }
         Ok(out)
     }
@@ -527,6 +621,33 @@ impl Database {
             .await?;
         sqlx::query("VACUUM").execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn clear_all_cached_data(&self) -> Result<()> {
+        sqlx::query("DELETE FROM patches").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM skin_spotlight_cache")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM static_catalog")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM augments_catalog")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM game_assets_meta")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_cached_patch_locales(&self) -> Result<Vec<String>> {
+        let mut locales: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT patch_notes_locale FROM patches ORDER BY patch_notes_locale ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        locales.retain(|l| !l.trim().is_empty());
+        Ok(locales)
     }
 
     pub async fn get_game_assets_meta(&self) -> Result<Option<GameAssetsMeta>> {
@@ -849,6 +970,7 @@ impl Database {
     }
 
     pub async fn save_patch(&self, patch: &PatchData) -> Result<()> {
+        let locale = normalize_patch_locale(patch.patch_notes_locale.as_deref().unwrap_or("ru"));
         let patch_notes: Vec<PatchNoteEntry> = patch
             .patch_notes
             .iter()
@@ -866,14 +988,15 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO patches (version, fetched_at, data_json)
-            VALUES (?, ?, ?)
-            ON CONFLICT(version) DO UPDATE SET
+            INSERT INTO patches (version, patch_notes_locale, fetched_at, data_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(version, patch_notes_locale) DO UPDATE SET
                 fetched_at = excluded.fetched_at,
                 data_json = excluded.data_json
             "#,
         )
         .bind(&patch.version)
+        .bind(locale)
         .bind(date_str)
         .bind(json_data)
         .execute(&self.pool)
@@ -882,40 +1005,47 @@ impl Database {
         Ok(())
     }
 
+    pub async fn get_patch_for_locale(&self, version: &str, locale: &str) -> Result<Option<PatchData>> {
+        let locale = normalize_patch_locale(locale);
+        let row: Option<(String, String, String, String)> = sqlx::query_as(
+            "SELECT version, patch_notes_locale, data_json, fetched_at FROM patches WHERE version = ? AND patch_notes_locale = ?",
+        )
+        .bind(version)
+        .bind(locale)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((ver, loc, data, date_str)) = row {
+            return Ok(Some(patch_data_from_stored_row(
+                ver,
+                &data,
+                &date_str,
+                Some(&loc),
+            )?));
+        }
+        Ok(None)
+    }
+
     pub async fn get_patch(&self, version: &str) -> Result<Option<PatchData>> {
-        let row: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT version, data_json, fetched_at FROM patches WHERE version = ?",
+        let row: Option<(String, String, String, String)> = sqlx::query_as(
+            r#"
+            SELECT version, patch_notes_locale, data_json, fetched_at
+            FROM patches
+            WHERE version = ?
+            ORDER BY CASE patch_notes_locale WHEN 'ru' THEN 0 WHEN 'en' THEN 1 ELSE 2 END, fetched_at DESC
+            LIMIT 1
+            "#,
         )
         .bind(version)
         .fetch_optional(&self.pool)
         .await?;
-
-        if let Some((ver, data, date_str)) = row {
-            let content: PatchJsonContent = match serde_json::from_str(&data) {
-                Ok(c) => c,
-                Err(_) => {
-                    let champions: Vec<ChampionStats> = serde_json::from_str(&data)?;
-                    PatchJsonContent {
-                        champions,
-                        patch_notes: vec![],
-                        banner_url: None,
-                        patch_notes_locale: None,
-                    }
-                }
-            };
-
-            let date = chrono::DateTime::parse_from_rfc3339(&date_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-
-            return Ok(Some(PatchData {
-                version: ver,
-                fetched_at: date,
-                champions: content.champions,
-                patch_notes: content.patch_notes,
-                banner_url: content.banner_url,
-                patch_notes_locale: content.patch_notes_locale,
-            }));
+        if let Some((ver, loc, data, date_str)) = row {
+            return Ok(Some(patch_data_from_stored_row(
+                ver,
+                &data,
+                &date_str,
+                Some(&loc),
+            )?));
         }
         Ok(None)
     }
@@ -924,17 +1054,24 @@ impl Database {
         if self.get_patch(version).await?.is_some() {
             return Ok(true);
         }
-        let all: Vec<String> = sqlx::query_scalar("SELECT version FROM patches")
+        let all: Vec<String> = sqlx::query_scalar("SELECT DISTINCT version FROM patches")
             .fetch_all(&self.pool)
             .await?;
         Ok(all.iter().any(|v| versions_match(v, version)))
+    }
+
+    pub async fn patch_exists_resolving_with_locale(&self, version: &str, locale: &str) -> Result<bool> {
+        Ok(self
+            .get_patch_resolving_with_locale(version, locale)
+            .await?
+            .is_some())
     }
 
     pub async fn get_patch_resolving(&self, version: &str) -> Result<Option<PatchData>> {
         if let Some(p) = self.get_patch(version).await? {
             return Ok(Some(p));
         }
-        let all: Vec<String> = sqlx::query_scalar("SELECT version FROM patches")
+        let all: Vec<String> = sqlx::query_scalar("SELECT DISTINCT version FROM patches")
             .fetch_all(&self.pool)
             .await?;
         for v in &all {
@@ -950,22 +1087,52 @@ impl Database {
         Ok(None)
     }
 
+    pub async fn get_patch_resolving_with_locale(
+        &self,
+        version: &str,
+        locale: &str,
+    ) -> Result<Option<PatchData>> {
+        let locale = normalize_patch_locale(locale);
+        if let Some(p) = self.get_patch_for_locale(version, locale).await? {
+            return Ok(Some(p));
+        }
+        let all: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT version FROM patches WHERE patch_notes_locale = ?",
+        )
+        .bind(locale)
+        .fetch_all(&self.pool)
+        .await?;
+        for v in &all {
+            if versions_match(v, version) {
+                let mut p = match self.get_patch_for_locale(v, locale).await? {
+                    Some(p) => p,
+                    None => continue,
+                };
+                p.version = version.to_string();
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
+    }
+
     /// Все версии из кэша, от новой к старой (тот же порядок, что и у `get_patches_newest_versions_first`).
     pub async fn list_cached_patch_versions(&self) -> Result<Vec<String>> {
-        let all_versions: Vec<String> = sqlx::query_scalar("SELECT version FROM patches")
+        let all_versions: Vec<String> = sqlx::query_scalar("SELECT DISTINCT version FROM patches")
             .fetch_all(&self.pool)
             .await?;
-        let mut vers = all_versions;
+        let mut vers: Vec<String> = HashSet::<String>::from_iter(all_versions.into_iter())
+            .into_iter()
+            .collect();
         vers.sort_by(|a, b| cmp_display_patch(b, a));
         Ok(vers)
     }
 
     /// Последние `limit` патчей по **номеру версии** (самый новый игровой патч первым).
     pub async fn get_patches_newest_versions_first(&self, limit: i64) -> Result<Vec<PatchData>> {
-        let rows = self.fetch_version_ordered_rows(limit).await?;
+        let rows = self.fetch_version_ordered_rows(Some(limit)).await?;
         let mut result = Vec::with_capacity(rows.len());
-        for (ver, data, date_str) in rows {
-            result.push(patch_data_from_stored_row(ver, &data, &date_str)?);
+        for (ver, loc, data, date_str) in rows {
+            result.push(patch_data_from_stored_row(ver, &data, &date_str, Some(&loc))?);
         }
         Ok(result)
     }
@@ -974,12 +1141,15 @@ impl Database {
         self.get_patches_newest_versions_first(limit).await
     }
 
-    fn collect_note_history<F>(rows: Vec<(String, String, String)>, filter: F) -> Result<Vec<ChampionHistoryEntry>>
+    fn collect_note_history<F>(
+        rows: Vec<(String, String, String, String)>,
+        filter: F,
+    ) -> Result<Vec<ChampionHistoryEntry>>
     where
         F: Fn(&PatchNoteEntry, &str) -> bool,
     {
         let mut history = Vec::new();
-        for (ver, data, date_str) in rows {
+        for (ver, _loc, data, date_str) in rows {
             let content = match deserialize_stored_json(&data) {
                 Some(c) => c,
                 None => continue,
@@ -1007,7 +1177,7 @@ impl Database {
         name: &str,
         category: PatchCategory,
     ) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_version_ordered_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(None).await?;
         let search = name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             note.category == category
@@ -1021,7 +1191,7 @@ impl Database {
     }
 
     pub async fn get_item_history(&self, item_name: &str) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_version_ordered_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(None).await?;
         let search = item_name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             (note.category == PatchCategory::Items || note.category == PatchCategory::ItemsRunes)
@@ -1030,7 +1200,7 @@ impl Database {
     }
 
     pub async fn get_rune_history(&self, rune_name: &str) -> Result<Vec<ChampionHistoryEntry>> {
-        let rows = self.fetch_version_ordered_rows(20).await?;
+        let rows = self.fetch_version_ordered_rows(None).await?;
         let search = rune_name.to_lowercase();
         Self::collect_note_history(rows, move |note, _ver| {
             (note.category == PatchCategory::Runes || note.category == PatchCategory::ItemsRunes)

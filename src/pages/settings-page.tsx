@@ -22,7 +22,7 @@ export function SettingsPage({ theme, onThemeChange }: Props) {
           </Link>
         </Button>
       </div>
-      <h1 className="mb-8 text-2xl font-semibold tracking-tight">{t("settings.title")}</h1>
+      <h1 className="mb-8 text-2xl font-semibold tracking-normal">{t("settings.title")}</h1>
       <SettingsControls theme={theme} onThemeChange={onThemeChange} />
     </div>
   );

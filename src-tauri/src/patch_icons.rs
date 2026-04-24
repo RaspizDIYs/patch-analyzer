@@ -92,7 +92,9 @@ fn best_item_row<'a>(
         .find(|r| {
             let ru = r.name_ru.to_lowercase();
             let en = r.name_en.to_lowercase();
-            (title_lower.contains(&ru) || title_lower.contains(&en) || ru.contains(title_lower) || en.contains(title_lower))
+            let ru_ok = ru.len() >= 4 && title_lower.contains(&ru);
+            let en_ok = en.len() >= 4 && title_lower.contains(&en);
+            (ru_ok || en_ok)
                 && r.cd_meta
                     .as_ref()
                     .map(|m| cd_meta_allows_maps(m, wanted))
@@ -191,12 +193,18 @@ fn push_mode_catalog_fallbacks(
     runes: &[StaticCatalogRow],
     candidates: &mut Vec<String>,
 ) {
-    if let Some(row) = best_champion_match(title, champs) {
-        for u in urls_from_row(row) {
-            push_unique(candidates, u);
+    let before_items = candidates.len();
+    push_item_icons_for_title(title, maps, items, candidates);
+
+    // In mode notes, prefer item/rune matches first. Champion fallback is last resort.
+    if candidates.len() == before_items {
+        if let Some(row) = best_champion_match(title, champs) {
+            for u in urls_from_row(row) {
+                push_unique(candidates, u);
+            }
         }
     }
-    push_item_icons_for_title(title, maps, items, candidates);
+
     if let Some(row) = best_rune_match(title, runes) {
         for u in urls_from_row(row) {
             push_unique(candidates, u);
@@ -256,12 +264,16 @@ pub async fn enrich_patch_data_icons(db: &Database, patch: &mut PatchData) -> Re
     let augments = db.get_static_catalog_kind("augment").await.unwrap_or_default();
     let champs = db.get_static_catalog_kind("champion").await.unwrap_or_default();
     let runes = db.get_static_catalog_kind("rune").await.unwrap_or_default();
-    if items.is_empty() && augments.is_empty() && champs.is_empty() && runes.is_empty() {
+    let abilities = db
+        .get_static_catalog_kind("champion_ability")
+        .await
+        .unwrap_or_default();
+    if items.is_empty() && augments.is_empty() && champs.is_empty() && runes.is_empty() && abilities.is_empty() {
         return Ok(());
     }
 
     for note in &mut patch.patch_notes {
-        enrich_one_note(note, &items, &augments, &champs, &runes);
+        enrich_one_note(note, &items, &augments, &champs, &runes, &abilities);
     }
     Ok(())
 }
@@ -281,6 +293,7 @@ fn enrich_one_note(
     augments: &[StaticCatalogRow],
     champs: &[StaticCatalogRow],
     runes: &[StaticCatalogRow],
+    abilities: &[StaticCatalogRow],
 ) {
     let title_lower = note.title.to_lowercase();
     let maps = map_ids_for_category(&note.category);
@@ -324,19 +337,37 @@ fn enrich_one_note(
                     push_unique(&mut candidates, u);
                 }
             }
-            push_mode_catalog_fallbacks(
-                &note.title,
-                &maps,
-                items,
-                champs,
-                runes,
-                &mut candidates,
-            );
+            // Avoid injecting unrelated champion/item/rune icons when augment match already exists.
+            if candidates.is_empty() {
+                push_mode_catalog_fallbacks(
+                    &note.title,
+                    &maps,
+                    items,
+                    champs,
+                    runes,
+                    &mut candidates,
+                );
+            }
         }
         PatchCategory::Champions => {
             if let Some(row) = best_champion_match(&note.title, champs) {
                 for u in urls_from_row(row) {
                     push_unique(&mut candidates, u);
+                }
+                let champion_id = row.stable_id.clone();
+                for block in &mut note.details {
+                    if block.icon_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+                        continue;
+                    }
+                    let Some(title) = block.title.as_deref() else {
+                        continue;
+                    };
+                    if let Some(ability_row) = best_ability_match(abilities, &champion_id, title) {
+                        block.icon_url = ability_row
+                            .icon_sources
+                            .iter()
+                            .find_map(|s| s.url.clone());
+                    }
                 }
             }
         }
@@ -385,4 +416,31 @@ fn enrich_one_note(
     if !candidates.is_empty() {
         note.icon_candidates = Some(candidates);
     }
+}
+
+fn best_ability_match<'a>(
+    abilities: &'a [StaticCatalogRow],
+    champion_id: &str,
+    title: &str,
+) -> Option<&'a StaticCatalogRow> {
+    let variants = title_match_variants(title);
+    if variants.is_empty() {
+        return None;
+    }
+    abilities.iter().find(|row| {
+        let Some(meta_champ) = row
+            .cd_meta
+            .as_ref()
+            .and_then(|m| m.get("champion_id"))
+            .and_then(|v| v.as_str())
+        else {
+            return false;
+        };
+        if !meta_champ.eq_ignore_ascii_case(champion_id) {
+            return false;
+        }
+        let ru = row.name_ru.to_lowercase();
+        let en = row.name_en.to_lowercase();
+        variants.iter().any(|v| v == &ru || v == &en)
+    })
 }

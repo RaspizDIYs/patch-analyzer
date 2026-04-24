@@ -90,6 +90,12 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  html {
+    text-size-adjust: 100%;
   }
 
   html.reduce-motion *,

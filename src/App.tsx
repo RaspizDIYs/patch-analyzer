@@ -10,6 +10,7 @@ import {
   type SyntheticEvent,
 } from "react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Routes, Route, NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -144,6 +145,16 @@ function RouteFallback() {
 const TIER_WINDOW_OPTIONS = [5, 10, 20] as const;
 const TIER_HISTORY_TOP_LIMIT = 10;
 const TIER_ARCHIVE_SORT_OPTIONS = ["score", "buffs", "nerfs"] as const;
+const PREVIOUS_PATCH_TARGET_OPTIONS = [50, 60, 70, 80, 90, 100] as const;
+const PREVIOUS_PATCH_SAVED_EVENT = "previous_patch_saved";
+type PreviousPatchSavedPayload = {
+  version: string;
+  processed: number;
+  total: number;
+  downloaded: number;
+  skipped: number;
+  saved: boolean;
+};
 
 const LOL_WIKI_ENTRIES = [
   { url: "https://wiki.leagueoflegends.com/en-us/", labelKey: "lolWiki.main" },
@@ -198,7 +209,7 @@ function resolveUiImageSrc(url?: string | null): string | undefined {
     !cleaned.startsWith("tauri:")
   ) {
     try {
-      return convertFileSrc(cleaned);
+      return convertFileSrc(cleaned.replace(/\\/g, "/"));
     } catch {
       return cleaned;
     }
@@ -224,6 +235,15 @@ function App() {
   const patchNotesLocale = i18n.language?.startsWith("en") ? "en" : "ru";
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncingPrevious, setSyncingPrevious] = useState(false);
+  const [previousSyncProgress, setPreviousSyncProgress] = useState<{
+    processed: number;
+    total: number;
+    downloaded: number;
+    skipped: number;
+  } | null>(null);
+  const [previousPatchTargetTotal, setPreviousPatchTargetTotal] =
+    useState<(typeof PREVIOUS_PATCH_TARGET_OPTIONS)[number]>(50);
   const [version, setVersion] = useState("");
   const [patchesList, setPatchesList] = useState<string[]>([]);
   const [cacheLoaded, setCacheLoaded] = useState(false);
@@ -231,6 +251,41 @@ function App() {
   const [newPatches, setNewPatches] = useState<Set<string>>(new Set());
   const [theme, setTheme] = useState<ThemeOption>(() => loadAppPreferences().theme);
   const prevLocaleRef = useRef(patchNotesLocale);
+  const currentVersionRef = useRef(version);
+
+  useEffect(() => {
+    currentVersionRef.current = version;
+  }, [version]);
+
+  useEffect(() => {
+    if (!isTauri() || !import.meta.env.DEV) return;
+    void invoke("cache_status").catch(() => undefined);
+    void invoke("validate_cached_assets").catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: UnlistenFn | undefined;
+    void (async () => {
+      unlisten = await listen<PreviousPatchSavedPayload>(PREVIOUS_PATCH_SAVED_EVENT, async (event) => {
+        setPreviousSyncProgress({
+          processed: event.payload.processed,
+          total: event.payload.total,
+          downloaded: event.payload.downloaded,
+          skipped: event.payload.skipped,
+        });
+        try {
+          const list = await invoke<string[]>("get_cached_patch_versions");
+          setPatchesList(list);
+        } catch {
+          // ignore live update errors
+        }
+      });
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
   useEffect(() => {
     applyDomFromPreferences(loadAppPreferences());
     document.documentElement.lang = i18n.language?.startsWith("en") ? "en" : "ru";
@@ -462,6 +517,36 @@ function App() {
     }
   }
 
+  async function handleSyncPreviousToLimit(targetTotal: (typeof PREVIOUS_PATCH_TARGET_OPTIONS)[number]) {
+    setSyncingPrevious(true);
+    setPreviousSyncProgress(null);
+    toast.info(t("toasts.syncingPrevious", { count: targetTotal }));
+    try {
+      await invoke("sync_previous_patch_history_to_limit", {
+        targetTotal,
+        patchNotesLocale,
+      });
+      toast.success(t("toasts.syncPreviousDone", { count: targetTotal }));
+      const list = await invoke<string[]>("get_cached_patch_versions");
+      setPatchesList(list);
+      const selectedVersion = currentVersionRef.current;
+      if (list.length > 0 && !list.includes(selectedVersion)) {
+        const fallback = list[0]!;
+        setVersion(fallback);
+        saveAppPreferences({ lastPatchVersion: fallback });
+        await loadData(fallback, false, list);
+      } else if (selectedVersion) {
+        await loadData(selectedVersion, false, list);
+      }
+      window.dispatchEvent(new Event("tier-data-updated"));
+    } catch (e) {
+      toast.error(t("toasts.syncError", { msg: String(e) }));
+    } finally {
+      setSyncingPrevious(false);
+      window.setTimeout(() => setPreviousSyncProgress(null), 2000);
+    }
+  }
+
   function setVersionPersist(next: string) {
     setVersion(next);
     saveAppPreferences({ lastPatchVersion: next });
@@ -502,14 +587,14 @@ function App() {
                       <img src="/logo.svg" alt="Logo" className="h-11 w-11 drop-shadow-md" />
                     </div>
                     <div className="min-w-0">
-                      <h1 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
+                      <h1 className="text-lg font-semibold leading-snug tracking-normal text-foreground">
                         Patch Analyzer
                       </h1>
-                      <p className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                      <p className="truncate text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">
                         {t("header.patchLine", { version: version || "—" })}
                       </p>
                       {isTauri() && cacheLoaded && patchesList.length > 0 ? (
-                        <p className="text-[10px] text-muted-foreground/70">
+                        <p className="text-xs text-muted-foreground">
                           {t("header.dataFromCache")}
                         </p>
                       ) : null}
@@ -565,7 +650,7 @@ function App() {
                         size="icon"
                         className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground"
                         aria-label={t("header.downloadPatches")}
-                        disabled={syncing}
+                        disabled={syncing || syncingPrevious}
                         onClick={handleSyncAll}
                       >
                         <DownloadCloud className={cn("h-4 w-4", syncing && "animate-bounce")} />
@@ -573,6 +658,68 @@ function App() {
                     </TooltipTrigger>
                     <TooltipContent side="bottom">{t("header.downloadPatchesHint")}</TooltipContent>
                   </Tooltip>
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground"
+                            aria-label={t("header.downloadPreviousPatches")}
+                            disabled={syncing || syncingPrevious}
+                          >
+                            <History className={cn("h-4 w-4", syncingPrevious && "animate-bounce")} />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <div className="space-y-1">
+                          <p>{t("header.downloadPreviousPatchesHint", { count: previousPatchTargetTotal })}</p>
+                          <p className="text-xs text-amber-600 dark:text-amber-400">
+                            {t("header.downloadPreviousPatchesWarning")}
+                          </p>
+                          {syncingPrevious && previousSyncProgress && previousSyncProgress.total > 0 ? (
+                            <>
+                              <p className="text-xs text-muted-foreground">
+                                {t("header.downloadPreviousPatchesProgress", {
+                                  processed: previousSyncProgress.processed,
+                                  total: previousSyncProgress.total,
+                                })}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {t("header.downloadPreviousPatchesStats", {
+                                  downloaded: previousSyncProgress.downloaded,
+                                  skipped: previousSyncProgress.skipped,
+                                })}
+                              </p>
+                            </>
+                          ) : null}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent align="end" className="min-w-52">
+                      <DropdownMenuItem disabled>
+                        {t("header.previousPatchesLimitLabel")}
+                      </DropdownMenuItem>
+                      {PREVIOUS_PATCH_TARGET_OPTIONS.map((option) => (
+                        <DropdownMenuItem
+                          key={option}
+                          disabled={syncing || syncingPrevious}
+                          onClick={() => {
+                            setPreviousPatchTargetTotal(option);
+                            void handleSyncPreviousToLimit(option);
+                          }}
+                        >
+                          <span className="flex w-full items-center justify-between gap-3">
+                            <span>{t("header.previousPatchesLimitOption", { count: option })}</span>
+                            {option === previousPatchTargetTotal ? <Check className="h-4 w-4" /> : null}
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <AlertDialog>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -666,7 +813,7 @@ function App() {
             <footer className="sticky bottom-0 z-40 border-t border-border/40 bg-background/80 backdrop-blur-xl supports-backdrop-filter:bg-background/60">
               <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-widest">
+                  <span className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
                     {t("lolWiki.category")}
                   </span>
                   <div className="hidden h-3 w-px bg-border sm:block" />
@@ -679,7 +826,7 @@ function App() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-7 shrink-0 rounded-full px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                        className="h-7 shrink-0 rounded-full px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
                         onClick={() => void openWikiUrl(url)}
                       >
                         {t(labelKey)}
@@ -744,7 +891,7 @@ function CustomPatchSelect({
                 )}
                 <span>{t("header.patchLine", { version: opt })}</span>
                 {isNew && (
-                  <UiBadge variant="warning" className="px-1 py-0 text-[10px]">
+                  <UiBadge variant="warning" className="px-1 py-0 text-xs">
                     NEW
                   </UiBadge>
                 )}
@@ -767,8 +914,7 @@ function TierListView() {
     oldestPatch: string;
     usedPatches: number;
   } | null>(null);
-  const [tierWindowVersions, setTierWindowVersions] = useState<string[]>([]);
-  const [historyMode, setHistoryMode] = useState<"top" | "archive">("top");
+  const [historyMode, setHistoryMode] = useState<"topBuffs" | "topNerfs" | "archive">("topBuffs");
   const [archiveSort, setArchiveSort] = useState<(typeof TIER_ARCHIVE_SORT_OPTIONS)[number]>("score");
   const [entityType, setEntityType] = useState<"champion" | "rune" | "item">("champion");
   const [allChamps, setAllChamps] = useState<ChampionListItem[]>([]);
@@ -785,7 +931,6 @@ function TierListView() {
       ]);
       setData(tierEntries);
       const windowVersions = cachedVersions.slice(0, tierWindow);
-      setTierWindowVersions(windowVersions);
       if (windowVersions.length > 0) {
         setTierRange({
           newestPatch: windowVersions[0]!,
@@ -793,7 +938,6 @@ function TierListView() {
           usedPatches: windowVersions.length,
         });
       } else {
-        setTierWindowVersions([]);
         setTierRange(null);
       }
     } catch (e) {
@@ -931,59 +1075,61 @@ function TierListView() {
     <div className="animate-in fade-in duration-500">
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,1fr)]">
         <article className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm shadow-black/3 dark:shadow-black/20">
-          <div className="border-b border-border/50 bg-muted/10 px-5 py-6 sm:px-8">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="border-b border-border/50 bg-muted/10 px-5 py-5 sm:px-8">
+            <div className="space-y-4">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   {t("tier.aggregation", { count: tierWindow })}
                 </p>
-                <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                <h2 className="mt-1 text-2xl font-semibold tracking-normal text-foreground sm:text-3xl">
                   {t("tier.title")}
                 </h2>
               </div>
-              <Tabs
-                value={entityType}
-                onValueChange={(v) => setEntityType(v as "champion" | "rune" | "item")}
-                className="w-full lg:w-auto"
-              >
-                <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 lg:w-auto">
-                  <TabsTrigger
-                    value="champion"
-                    className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
-                  >
-                    {t("tier.champions")}
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="rune"
-                    className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
-                  >
-                    {t("tier.runes")}
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="item"
-                    className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
-                  >
-                    {t("tier.items")}
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <Tabs
-                value={String(tierWindow)}
-                onValueChange={(v) => setTierWindow(Number(v) as (typeof TIER_WINDOW_OPTIONS)[number])}
-                className="w-full lg:w-auto"
-              >
-                <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 lg:w-auto">
-                  {TIER_WINDOW_OPTIONS.map((value) => (
+              <div className="flex flex-wrap items-center gap-2">
+                <Tabs
+                  value={entityType}
+                  onValueChange={(v) => setEntityType(v as "champion" | "rune" | "item")}
+                  className="min-w-0 flex-1 sm:flex-initial"
+                >
+                  <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 sm:w-auto sm:flex-nowrap">
                     <TabsTrigger
-                      key={value}
-                      value={String(value)}
-                      className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                      value="champion"
+                      className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
                     >
-                      {t("tier.windowOption", { count: value })}
+                      {t("tier.champions")}
                     </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
+                    <TabsTrigger
+                      value="rune"
+                      className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
+                    >
+                      {t("tier.runes")}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="item"
+                      className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
+                    >
+                      {t("tier.items")}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <Tabs
+                  value={String(tierWindow)}
+                  onValueChange={(v) => setTierWindow(Number(v) as (typeof TIER_WINDOW_OPTIONS)[number])}
+                  className="min-w-0 flex-1 sm:flex-initial"
+                >
+                  <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 sm:w-auto sm:flex-nowrap">
+                    {TIER_WINDOW_OPTIONS.map((value) => (
+                      <TabsTrigger
+                        key={value}
+                        value={String(value)}
+                        className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
+                      >
+                        {t("tier.windowOption", { count: value })}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </div>
             </div>
           </div>
 
@@ -1001,19 +1147,19 @@ function TierListView() {
                   <Table>
                     <TableHeader>
                       <TableRow className="border-b border-border/50 bg-muted/15 hover:bg-muted/15">
-                        <TableHead className="w-[40%] pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <TableHead className="w-[40%] pl-6 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                           {t("tier.entity")}
                         </TableHead>
-                        <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-chart-up">
+                        <TableHead className="text-center text-sm font-semibold uppercase tracking-wide text-chart-up">
                           ↑ Buff
                         </TableHead>
-                        <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-chart-down">
+                        <TableHead className="text-center text-sm font-semibold uppercase tracking-wide text-chart-down">
                           ↓ Nerf
                         </TableHead>
-                        <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <TableHead className="text-center text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                           {t("tier.changes")}
                         </TableHead>
-                        <TableHead className="pr-6 text-center text-xs font-semibold uppercase tracking-wide text-chart-muted">
+                        <TableHead className="pr-6 text-center text-sm font-semibold uppercase tracking-wide text-chart-muted">
                           Score
                         </TableHead>
                       </TableRow>
@@ -1025,12 +1171,20 @@ function TierListView() {
                         return (
                           <TableRow
                             key={entry.name + entry.category + idx}
-                            className="cursor-pointer border-border/40 transition-colors hover:bg-muted/25"
+                            className="cursor-pointer border-border/40 transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => handleOpenHistory(entry)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                handleOpenHistory(entry);
+                              }
+                            }}
                           >
                             <TableCell className="py-3.5 pl-6">
                               <div className="flex min-w-0 items-center gap-3">
-                                <span className="w-7 shrink-0 text-center font-mono text-[11px] text-muted-foreground">
+                                <span className="w-7 shrink-0 text-center font-mono text-xs text-muted-foreground">
                                   {idx + 1}
                                 </span>
                                 <TierEntityIcon
@@ -1041,7 +1195,7 @@ function TierListView() {
                                 />
                                 <div className="min-w-0">
                                   <div className="truncate font-medium text-foreground">{name}</div>
-                                  <div className="text-[11px] text-muted-foreground">{categoryLabel(entry)}</div>
+                                  <div className="text-xs text-muted-foreground">{categoryLabel(entry)}</div>
                                 </div>
                               </div>
                             </TableCell>
@@ -1087,10 +1241,10 @@ function TierListView() {
                         key={entry.name + entry.category + idx}
                         type="button"
                         onClick={() => handleOpenHistory(entry)}
-                        className="flex w-full flex-col gap-3 p-4 text-left transition-colors hover:bg-muted/20 active:bg-muted/30"
+                        className="flex w-full flex-col gap-3 p-4 text-left transition-colors hover:bg-muted/20 active:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <div className="flex items-center gap-3">
-                          <span className="w-8 shrink-0 text-center font-mono text-xs text-muted-foreground">
+                          <span className="w-8 shrink-0 text-center font-mono text-sm text-muted-foreground">
                             #{idx + 1}
                           </span>
                           <TierEntityIcon
@@ -1101,10 +1255,10 @@ function TierListView() {
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-semibold leading-tight text-foreground">{name}</div>
-                            <div className="text-[11px] text-muted-foreground">{categoryLabel(entry)}</div>
+                            <div className="text-xs text-muted-foreground">{categoryLabel(entry)}</div>
                           </div>
                         </div>
-                        <div className="flex flex-wrap items-center justify-between gap-2 pl-11 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2 pl-11 text-sm">
                           <span className="tabular-nums text-chart-up">↑ {entry.buffs}</span>
                           <span className="tabular-nums text-chart-down">↓ {entry.nerfs}</span>
                           <span className="tabular-nums text-muted-foreground">⇄ {entry.adjusted}</span>
@@ -1134,8 +1288,8 @@ function TierListView() {
         </article>
         <article className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm shadow-black/3 dark:shadow-black/20 xl:sticky xl:top-24 xl:max-h-[calc(100vh-7rem)] xl:overflow-auto">
           <div className="border-b border-border/50 bg-muted/10 px-5 py-5 sm:px-6">
-            <h3 className="text-lg font-semibold tracking-tight text-foreground">{t("tier.historyTitle")}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <h3 className="text-lg font-semibold tracking-normal text-foreground">{t("tier.historyTitle")}</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
               {tierRange
                 ? t("tier.historyRange", {
                   newest: tierRange.newestPatch,
@@ -1144,99 +1298,96 @@ function TierListView() {
                 })
                 : t("tier.noData")}
             </p>
-            {import.meta.env.DEV && (
-              <details className="mt-2 rounded-lg border border-border/50 bg-muted/10 px-3 py-2 text-xs">
-                <summary className="cursor-pointer font-medium text-muted-foreground">
-                  {t("tier.debugVersionsTitle")}
-                </summary>
-                <div className="mt-2 font-mono text-[11px] text-muted-foreground">
-                  {tierWindowVersions.length > 0
-                    ? tierWindowVersions.join(", ")
-                    : t("tier.noData")}
-                </div>
-              </details>
-            )}
             <Tabs
               value={historyMode}
-              onValueChange={(v) => setHistoryMode(v as "top" | "archive")}
+              onValueChange={(v) => setHistoryMode(v as "topBuffs" | "topNerfs" | "archive")}
               className="mt-3 w-full"
             >
               <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 sm:w-auto">
                 <TabsTrigger
-                  value="top"
-                  className="flex-1 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                  value="topBuffs"
+                  className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
                 >
-                  {t("tier.topTab")}
+                  {t("tier.topBuffs")}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="topNerfs"
+                  className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                >
+                  {t("tier.topNerfs")}
                 </TabsTrigger>
                 <TabsTrigger
                   value="archive"
-                  className="flex-1 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                  className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
                 >
                   {t("tier.archiveTab")}
                 </TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
-          {historyMode === "top" ? (
+          {historyMode !== "archive" ? (
             <div className="grid gap-4 px-5 py-5 sm:px-6">
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-chart-up">
-                  {t("tier.topBuffs")}
-                </p>
-                {topBuffHistory.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t("tier.noHistoryData")}</p>
-                ) : (
-                  <div className="space-y-2">
-                    {topBuffHistory.map((entry, idx) => {
-                      const { iconCandidates, name } = resolveIconAndName(entry);
-                      return (
-                        <button
-                          key={`buff-${entry.name}-${entry.category}-${idx}`}
-                          type="button"
-                          onClick={() => handleOpenHistory(entry)}
-                          className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25"
-                        >
-                          <span className="w-6 shrink-0 text-center font-mono text-xs text-muted-foreground">
-                            {idx + 1}
-                          </span>
-                          <TierEntityIcon urls={iconCandidates} name={name} size="md" className="h-8 w-8" />
-                          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
-                          <span className="font-mono text-xs tabular-nums text-chart-up">↑ {entry.buffs}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-chart-down">
-                  {t("tier.topNerfs")}
-                </p>
-                {topNerfHistory.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t("tier.noHistoryData")}</p>
-                ) : (
-                  <div className="space-y-2">
-                    {topNerfHistory.map((entry, idx) => {
-                      const { iconCandidates, name } = resolveIconAndName(entry);
-                      return (
-                        <button
-                          key={`nerf-${entry.name}-${entry.category}-${idx}`}
-                          type="button"
-                          onClick={() => handleOpenHistory(entry)}
-                          className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25"
-                        >
-                          <span className="w-6 shrink-0 text-center font-mono text-xs text-muted-foreground">
-                            {idx + 1}
-                          </span>
-                          <TierEntityIcon urls={iconCandidates} name={name} size="md" className="h-8 w-8" />
-                          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
-                          <span className="font-mono text-xs tabular-nums text-chart-down">↓ {entry.nerfs}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              {historyMode === "topBuffs" ? (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold uppercase tracking-wide text-chart-up">
+                    {t("tier.topBuffs")}
+                  </p>
+                  {topBuffHistory.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">{t("tier.noHistoryData")}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {topBuffHistory.map((entry, idx) => {
+                        const { iconCandidates, name } = resolveIconAndName(entry);
+                        return (
+                          <button
+                            key={`buff-${entry.name}-${entry.category}-${idx}`}
+                            type="button"
+                            onClick={() => handleOpenHistory(entry)}
+                            className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <span className="w-6 shrink-0 text-center font-mono text-sm text-muted-foreground">
+                              {idx + 1}
+                            </span>
+                            <TierEntityIcon urls={iconCandidates} name={name} size="md" className="h-8 w-8" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
+                            <span className="font-mono text-sm tabular-nums text-chart-up">↑ {entry.buffs}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold uppercase tracking-wide text-chart-down">
+                    {t("tier.topNerfs")}
+                  </p>
+                  {topNerfHistory.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">{t("tier.noHistoryData")}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {topNerfHistory.map((entry, idx) => {
+                        const { iconCandidates, name } = resolveIconAndName(entry);
+                        return (
+                          <button
+                            key={`nerf-${entry.name}-${entry.category}-${idx}`}
+                            type="button"
+                            onClick={() => handleOpenHistory(entry)}
+                            className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <span className="w-6 shrink-0 text-center font-mono text-sm text-muted-foreground">
+                              {idx + 1}
+                            </span>
+                            <TierEntityIcon urls={iconCandidates} name={name} size="md" className="h-8 w-8" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
+                            <span className="font-mono text-sm tabular-nums text-chart-down">↓ {entry.nerfs}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div className="px-5 py-5 sm:px-6">
@@ -1248,19 +1399,19 @@ function TierListView() {
                 <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 sm:w-auto">
                   <TabsTrigger
                     value="score"
-                    className="flex-1 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                    className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
                   >
                     {t("tier.sortScore")}
                   </TabsTrigger>
                   <TabsTrigger
                     value="buffs"
-                    className="flex-1 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                    className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
                   >
                     {t("tier.sortBuffs")}
                   </TabsTrigger>
                   <TabsTrigger
                     value="nerfs"
-                    className="flex-1 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial"
+                    className="flex-1 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial"
                   >
                     {t("tier.sortNerfs")}
                   </TabsTrigger>
@@ -1278,18 +1429,18 @@ function TierListView() {
                         key={`archive-${entry.name}-${entry.category}-${idx}`}
                         type="button"
                         onClick={() => handleOpenHistory(entry)}
-                        className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25"
+                        className="flex w-full items-center gap-3 rounded-lg border border-border/50 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <span className="w-6 shrink-0 text-center font-mono text-xs text-muted-foreground">
+                        <span className="w-6 shrink-0 text-center font-mono text-sm text-muted-foreground">
                           {idx + 1}
                         </span>
                         <TierEntityIcon urls={iconCandidates} name={name} size="md" className="h-8 w-8" />
                         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
-                        <span className="font-mono text-xs tabular-nums text-chart-up">↑ {entry.buffs}</span>
-                        <span className="font-mono text-xs tabular-nums text-chart-down">↓ {entry.nerfs}</span>
+                        <span className="font-mono text-sm tabular-nums text-chart-up">↑ {entry.buffs}</span>
+                        <span className="font-mono text-sm tabular-nums text-chart-down">↓ {entry.nerfs}</span>
                         <span
                           className={cn(
-                            "font-mono text-xs tabular-nums",
+                            "font-mono text-sm tabular-nums",
                             score > 0 && "text-chart-up",
                             score < 0 && "text-chart-down",
                             score === 0 && "text-chart-muted",
@@ -1350,10 +1501,18 @@ function ChampionHistoryView() {
   const uniqueItems = useMemo(() => {
     const map = new Map<string, ItemListItem>();
     for (const item of allItems) {
-      const key = item.id.trim() || normalizeEntityName(item.nameEn) || normalizeEntityName(item.name);
+      const keyRu = normalizeEntityName(item.name);
+      const keyEn = normalizeEntityName(item.nameEn);
+      const key = keyRu || keyEn || item.id.trim();
       if (!key) continue;
       const prev = map.get(key);
-      if (!prev || (!prev.icon_url && item.icon_url)) {
+      const prevHasBothNames = Boolean(prev?.name?.trim()) && Boolean(prev?.nameEn?.trim());
+      const curHasBothNames = Boolean(item.name?.trim()) && Boolean(item.nameEn?.trim());
+      if (
+        !prev ||
+        (!prev.icon_url && item.icon_url) ||
+        (!prevHasBothNames && curHasBothNames)
+      ) {
         map.set(key, item);
       }
     }
@@ -1556,9 +1715,11 @@ function ChampionHistoryView() {
       if (h.change.details) {
         h.change.details.forEach(d => {
           const key = d.title || t("patchView.defaultStats");
+          const detailIcon = d.icon_url || null;
           if (!groups.has(key)) {
-            // Используем иконку из патч-нотов (change.image_url) или из деталей
-            groups.set(key, { icon: mainIcon || d.icon_url || null, rawChanges: [] });
+            groups.set(key, { icon: detailIcon || mainIcon, rawChanges: [] });
+          } else if (detailIcon && !groups.get(key)?.icon) {
+            groups.get(key)!.icon = detailIcon;
           }
           if (d.changes) {
             d.changes.forEach(c => {
@@ -1673,10 +1834,10 @@ function ChampionHistoryView() {
         <div className="border-b border-border/50 bg-muted/10 px-5 py-6 sm:px-8">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                 {t("history.timelineCaption")}
               </p>
-              <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+              <h2 className="mt-1 text-2xl font-semibold tracking-normal text-foreground sm:text-3xl">
                 {t("nav.history")}
               </h2>
               <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
@@ -1697,19 +1858,19 @@ function ChampionHistoryView() {
               <TabsList className="inline-flex h-auto w-full max-w-full flex-wrap gap-1 rounded-xl bg-muted/25 p-1 lg:w-auto">
                 <TabsTrigger
                   value="champion"
-                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
                 >
                   {t("tier.champions")}
                 </TabsTrigger>
                 <TabsTrigger
                   value="rune"
-                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
                 >
                   {t("tier.runes")}
                 </TabsTrigger>
                 <TabsTrigger
                   value="item"
-                  className="flex-1 rounded-lg px-3 py-2.5 text-xs font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4 sm:text-sm"
+                  className="flex-1 rounded-lg px-3 py-2.5 text-sm font-medium data-[state=active]:shadow-sm sm:flex-initial sm:px-4"
                 >
                   {t("tier.items")}
                 </TabsTrigger>
@@ -1789,7 +1950,7 @@ function ChampionHistoryView() {
                   ) : null;
                 })()}
                 <div className="min-w-0">
-                  <h3 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                  <h3 className="text-xl font-semibold tracking-normal text-foreground sm:text-2xl">
                     {entityType === "champion" && champion && champion.name}
                     {entityType === "rune" && selectedRune && selectedRune.name}
                     {entityType === "item" && selectedItem && selectedItem.name}
@@ -1870,7 +2031,7 @@ function ChampionHistoryView() {
           )}
           {history.length > 0 && (
             <div className="border-t border-border/40 pt-2">
-              <p className="mb-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <p className="mb-6 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                 {t("history.perPatch")}
               </p>
               <div className="relative ml-2 space-y-8 border-l border-border/60 pb-6 pl-5 sm:ml-4 sm:pl-8">
@@ -1878,10 +2039,10 @@ function ChampionHistoryView() {
                   <div key={idx} className="group relative">
                     <div className="absolute -left-[calc(0.25rem+1px)] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-muted ring-2 ring-background transition-colors group-hover:bg-primary sm:-left-[calc(1.25rem+1px)]" />
                     <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <span className="rounded-full bg-primary px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-primary-foreground shadow-sm">
-                        Patch {item.patch_version}
+                      <span className="rounded-full bg-primary px-3 py-1 text-xs font-semibold uppercase tracking-wide text-primary-foreground shadow-sm">
+                        {t("history.patchLabel", { version: item.patch_version })}
                       </span>
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         {formatAppDate(item.date, dateFmt, i18n.language)}
                       </span>
                     </div>
@@ -2033,8 +2194,11 @@ function resolvePatchNoteLeadIconUrl(
   if (
     note.category === "ModeArena" ||
     note.category === "ModeAram" ||
-    note.category === "ModeAramChaos"
+    note.category === "ModeAramChaos" ||
+    note.category === "ModeAramAugments"
   ) {
+    const it = findItemByLooseTitle(note.title, items);
+    if (it) return cleanUrl(it.icon_url);
     const t = note.title.trim();
     const lower = t.toLowerCase();
     const c = champs.find(
@@ -2045,8 +2209,7 @@ function resolvePatchNoteLeadIconUrl(
         x.name_en.toLowerCase() === lower,
     );
     if (c) return cleanUrl(c.icon_url);
-    const it = findItemByLooseTitle(note.title, items);
-    return it ? cleanUrl(it.icon_url) : undefined;
+    return undefined;
   }
   return undefined;
 }
@@ -2075,6 +2238,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
   const [runeList, setRuneList] = useState<RuneListItem[]>([]);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
+  const [changeTypeFilter, setChangeTypeFilter] = useState<string>("All");
   const { items: skinYoutubeFeed } = useYoutubeFeed(YOUTUBE_CHANNEL_SKINSPOTLIGHTS);
   useEffect(() => {
     invoke<ChampionListItem[]>("get_all_champions")
@@ -2102,6 +2266,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
 
   useEffect(() => {
     setCategoryFilter("All");
+    setChangeTypeFilter("All");
   }, [data?.version]);
 
   useEffect(() => {
@@ -2134,9 +2299,21 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
   }, [categoryCounts]);
 
   const filteredPatchNotes = useMemo(() => {
-    if (categoryFilter === "All") return patchNotes;
-    return patchNotes.filter((n) => n.category === categoryFilter);
-  }, [patchNotes, categoryFilter]);
+    return patchNotes.filter((n) => {
+      const byCategory = categoryFilter === "All" || n.category === categoryFilter;
+      const byType = changeTypeFilter === "All" || n.change_type === changeTypeFilter;
+      return byCategory && byType;
+    });
+  }, [patchNotes, categoryFilter, changeTypeFilter]);
+
+  const availableChangeTypes = useMemo(() => {
+    const opts = new Set<string>();
+    for (const note of patchNotes) {
+      const raw = note.change_type?.trim();
+      if (raw) opts.add(raw);
+    }
+    return ["All", ...Array.from(opts)];
+  }, [patchNotes]);
 
   if (noLocalCache && !data) {
     return <EmptyState message={t("patchView.noLocalPatches")} />;
@@ -2164,10 +2341,10 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
   const patchHeaderBar = (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0 space-y-1">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {t("patchView.lolNotes")}
         </p>
-        <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+        <h2 className="text-2xl font-semibold tracking-normal text-foreground sm:text-3xl">
           {t("patchView.patchTitle", { version: data.version })}
         </h2>
       </div>
@@ -2217,7 +2394,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                 <TabsList className="inline-flex h-auto min-h-10 w-max min-w-full flex-nowrap justify-start gap-1 rounded-xl bg-muted/25 p-1 sm:flex-wrap">
                   <TabsTrigger
                     value="All"
-                    className="shrink-0 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:text-sm"
+                    className="shrink-0 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm"
                   >
                     {t("patchView.allCount", { count: data.patch_notes.length })}
                   </TabsTrigger>
@@ -2225,13 +2402,25 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                     <TabsTrigger
                       key={c}
                       value={c}
-                      className="shrink-0 rounded-lg px-3 py-2 text-xs font-medium data-[state=active]:shadow-sm sm:text-sm"
+                      className="shrink-0 rounded-lg px-3 py-2 text-sm font-medium data-[state=active]:shadow-sm"
                     >
                       {patchNoteCategoryLabel(c, t)} ({categoryCounts.get(c) ?? 0})
                     </TabsTrigger>
                   ))}
                 </TabsList>
               </div>
+              {availableChangeTypes.length > 1 ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {availableChangeTypes.map((type) => (
+                    <PatchNoteBadge
+                      key={type}
+                      type={type}
+                      onClick={() => setChangeTypeFilter(type)}
+                      active={changeTypeFilter === type}
+                    />
+                  ))}
+                </div>
+              ) : null}
             </div>
           </Tabs>
         )}
@@ -2258,7 +2447,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                         type="button"
                         className="aspect-video w-full overflow-hidden bg-muted/30 p-0 text-left"
                         onClick={() => {
-                          const u = cleanUrl(note.image_url);
+                          const u = resolveUiImageSrc(note.image_url);
                           if (u) setLightboxUrl(u);
                         }}
                       >
@@ -2271,7 +2460,11 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                     ) : null}
                     <div className="flex items-start justify-between gap-2 p-3">
                       <h3 className="text-sm font-semibold leading-snug">{note.title}</h3>
-                      <PatchNoteBadge type={note.change_type} />
+                      <PatchNoteBadge
+                        type={note.change_type}
+                        onClick={() => setChangeTypeFilter(note.change_type)}
+                        active={changeTypeFilter === note.change_type}
+                      />
                     </div>
                     <div className="border-t border-border/40 px-3 pb-3 pt-2">
                       <SkinSpotlightEmbed
@@ -2322,7 +2515,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                             </button>
                           ) : null}
                           <div className="min-w-0">
-                            <h3 className="text-lg font-semibold leading-snug tracking-tight sm:text-xl">
+                            <h3 className="text-lg font-semibold leading-snug tracking-normal sm:text-xl">
                               {note.title}
                             </h3>
                             {note.summary && (
@@ -2333,10 +2526,20 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:flex-col sm:items-end">
-                          <UiBadge variant="outline" className="font-normal">
-                            {patchNoteCategoryLabel(note.category, t)}
-                          </UiBadge>
-                          <PatchNoteBadge type={note.change_type} />
+                          <button
+                            type="button"
+                            onClick={() => setCategoryFilter(note.category)}
+                            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                          >
+                            <UiBadge variant="outline" className="font-normal">
+                              {patchNoteCategoryLabel(note.category, t)}
+                            </UiBadge>
+                          </button>
+                          <PatchNoteBadge
+                            type={note.change_type}
+                            onClick={() => setChangeTypeFilter(note.change_type)}
+                            active={changeTypeFilter === note.change_type}
+                          />
                           <Button
                             type="button"
                             variant="outline"
@@ -2371,7 +2574,7 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                           iconUrl={resolvePatchNoteLeadIconUrl(note, championList, itemList, runeList)}
                         />
                         <div className="min-w-0">
-                          <h3 className="text-lg font-semibold leading-snug tracking-tight sm:text-xl">
+                          <h3 className="text-lg font-semibold leading-snug tracking-normal sm:text-xl">
                             {note.title}
                           </h3>
                           {note.summary && (
@@ -2383,11 +2586,21 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
                       </div>
                       <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:flex-col sm:items-end">
                         {categoryFilter === "All" && (
-                          <UiBadge variant="outline" className="font-normal">
-                            {patchNoteCategoryLabel(note.category, t)}
-                          </UiBadge>
+                          <button
+                            type="button"
+                            onClick={() => setCategoryFilter(note.category)}
+                            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                          >
+                            <UiBadge variant="outline" className="font-normal">
+                              {patchNoteCategoryLabel(note.category, t)}
+                            </UiBadge>
+                          </button>
                         )}
-                        <PatchNoteBadge type={note.change_type} />
+                        <PatchNoteBadge
+                          type={note.change_type}
+                          onClick={() => setChangeTypeFilter(note.change_type)}
+                          active={changeTypeFilter === note.change_type}
+                        />
                       </div>
                     </div>
                     <div className="ml-0 space-y-4 border-l-2 border-border/60 pl-4 sm:ml-2 sm:pl-5">
@@ -2479,9 +2692,18 @@ function PatchReleaseView({ data, version, patchesList, onVersionChange, loading
   );
 }
 
-function PatchNoteBadge({ type }: { type: string }) {
+function PatchNoteBadge({
+  type,
+  onClick,
+  active,
+}: {
+  type: string;
+  onClick?: () => void;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
   const map: Record<string, NonNullable<ComponentProps<typeof UiBadge>["variant"]>> = {
+    All: "secondary",
     Buff: "success",
     Nerf: "destructive",
     Adjusted: "warning",
@@ -2496,7 +2718,21 @@ function PatchNoteBadge({ type }: { type: string }) {
   };
   const variant = map[type] ?? "secondary";
   if (type === "None") return null;
-  return <UiBadge variant={variant}>{labels[type] ?? type}</UiBadge>;
+  const badge = (
+    <UiBadge variant={variant} className={active ? "ring-2 ring-primary/40" : undefined}>
+      {labels[type] ?? type}
+    </UiBadge>
+  );
+  if (!onClick) return badge;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+    >
+      {badge}
+    </button>
+  );
 }
 
 // Helper components (ChampionSelect, ChampionIcon, EmptyState, Badge, etc.)
@@ -2560,7 +2796,7 @@ function ChampionSelect({ items, selected, onSelect }: { items: ChampionListItem
           <ScrollArea className="h-72">
             <div className="flex flex-col gap-0.5 p-1">
               {filtered.length === 0 ? (
-                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+                <p className="p-4 text-center text-sm text-muted-foreground">{t("select.noMatches")}</p>
               ) : (
                 filtered.map((item, idx) => (
                   <Button
@@ -2578,7 +2814,7 @@ function ChampionSelect({ items, selected, onSelect }: { items: ChampionListItem
                     <div className="flex min-w-0 flex-1 flex-col items-start">
                       <span className="text-sm font-medium text-foreground">{item.name}</span>
                       {item.name_en !== item.name && (
-                        <span className="text-[11px] text-muted-foreground">{item.name_en}</span>
+                        <span className="text-xs text-muted-foreground">{item.name_en}</span>
                       )}
                     </div>
                     {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
@@ -2672,7 +2908,7 @@ function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], sele
           <ScrollArea className="h-72">
             <div className="flex flex-col gap-0.5 p-1">
               {filtered.length === 0 ? (
-                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+                <p className="p-4 text-center text-sm text-muted-foreground">{t("select.noMatches")}</p>
               ) : (
                 filtered.map((item) => (
                   <Button
@@ -2696,7 +2932,7 @@ function RuneSelect({ items, selected, onSelect }: { items: RuneListItem[], sele
                     <div className="flex min-w-0 flex-1 flex-col items-start">
                       <span className="text-sm font-medium text-foreground">{item.name}</span>
                       {item.nameEn !== item.name && (
-                        <span className="text-[11px] text-muted-foreground">{item.nameEn}</span>
+                        <span className="text-xs text-muted-foreground">{item.nameEn}</span>
                       )}
                     </div>
                     {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
@@ -2716,7 +2952,17 @@ function ItemSelect({ items, selected, onSelect }: { items: ItemListItem[], sele
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const q = query.toLowerCase();
-  const filtered = items
+  const uniq = Array.from(
+    items.reduce((acc, item) => {
+      const key = `${normalizeEntityName(item.name)}|${normalizeEntityName(item.nameEn)}`;
+      const prev = acc.get(key);
+      if (!prev || (!prev.icon_url && item.icon_url)) {
+        acc.set(key, item);
+      }
+      return acc;
+    }, new Map<string, ItemListItem>()),
+  ).map(([, item]) => item);
+  const filtered = uniq
     .filter(i =>
       i.name.toLowerCase().includes(q) || i.nameEn.toLowerCase().includes(q)
     )
@@ -2771,7 +3017,7 @@ function ItemSelect({ items, selected, onSelect }: { items: ItemListItem[], sele
           <ScrollArea className="h-72">
             <div className="flex flex-col gap-0.5 p-1">
               {filtered.length === 0 ? (
-                <p className="p-4 text-center text-xs text-muted-foreground">{t("select.noMatches")}</p>
+                <p className="p-4 text-center text-sm text-muted-foreground">{t("select.noMatches")}</p>
               ) : (
                 filtered.map((item) => (
                   <Button
@@ -2789,7 +3035,7 @@ function ItemSelect({ items, selected, onSelect }: { items: ItemListItem[], sele
                     <div className="flex min-w-0 flex-1 flex-col items-start">
                       <span className="text-sm font-medium text-foreground">{item.name}</span>
                       {item.nameEn !== item.name && (
-                        <span className="text-[11px] text-muted-foreground">{item.nameEn}</span>
+                        <span className="text-xs text-muted-foreground">{item.nameEn}</span>
                       )}
                     </div>
                     {selected?.name === item.name && <Check className="h-4 w-4 shrink-0 text-primary" />}
@@ -2816,6 +3062,7 @@ function TierEntityIcon({
   className?: string;
 }) {
   const [idx, setIdx] = useState(0);
+  const sizeClass = size === "lg" ? "h-9 w-9" : "h-7 w-7";
   const src = idx < urls.length ? urls[idx] : undefined;
   if (src) {
     return (
@@ -2823,7 +3070,8 @@ function TierEntityIcon({
         src={src}
         className={cn(
           "shrink-0 rounded-full border border-border/60 bg-muted object-cover",
-          size === "md" ? "text-[10px]" : "text-xs",
+          sizeClass,
+          "text-xs",
           className,
         )}
         alt=""
@@ -2835,7 +3083,8 @@ function TierEntityIcon({
     <div
       className={cn(
         "flex shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted font-bold text-muted-foreground",
-        size === "md" ? "text-[10px]" : "text-xs",
+        sizeClass,
+        "text-xs",
         className,
       )}
     >
@@ -2856,7 +3105,7 @@ function ChampionIcon({
   size?: "sm" | "md" | "lg";
 }) {
   const sizes = { sm: "w-8 h-8", md: "w-12 h-12", lg: "w-16 h-16" };
-  const raw = [...(candidates ?? []), url].filter(
+  const raw = [url, ...(candidates ?? [])].filter(
     (x): x is string => typeof x === "string" && x.length > 0,
   );
   const merged: string[] = [];
@@ -2880,7 +3129,7 @@ function ChampionIcon({
       !t.startsWith("tauri:")
     ) {
       try {
-        src = convertFileSrc(t);
+        src = convertFileSrc(t.replace(/\\/g, "/"));
       } catch {
         /* keep src */
       }

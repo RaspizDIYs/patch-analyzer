@@ -1,8 +1,9 @@
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
 use tauri::image::Image;
 use std::sync::Arc;
+use std::path::PathBuf;
 use tokio::sync::Mutex;
 use crate::db::Database;
 use crate::scraper::Scraper;
@@ -13,8 +14,8 @@ use crate::models::{
 use crate::analyzer::Analyzer;
 use std::collections::{HashSet, HashMap};
 use crate::patch_version::versions_match;
+use crate::patch_change_trend::analyze_change_trend;
 use serde::Serialize;
-use regex::Regex;
 
 pub mod models;
 pub mod db;
@@ -26,12 +27,28 @@ mod youtube_data_api;
 mod wiki_embed;
 mod game_assets;
 mod patch_icons;
+mod asset_cache;
+mod patch_change_trend;
 pub mod wiki_augment_bundle;
 
 struct AppState {
     db: Arc<Database>,
     scraper: Arc<Scraper>,
     tier_cache: Mutex<Option<(String, Vec<TierEntry>)>>,
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(serde::Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubReleaseAsset>,
 }
 
 #[derive(Serialize)]
@@ -60,11 +77,21 @@ pub struct TierEntry {
     pub icon_url: Option<String>,
 }
 
+#[derive(Serialize, Clone)]
+struct PreviousPatchSavedPayload {
+    version: String,
+    processed: usize,
+    total: usize,
+    downloaded: usize,
+    skipped: usize,
+    saved: bool,
+}
+
 #[tauri::command]
 fn analyze_change_trends(texts: Vec<String>) -> Vec<String> {
     texts
         .into_iter()
-        .map(|t| match analyze_change_trend_backend(&t) {
+        .map(|t| match analyze_change_trend(&t) {
             1 => "up".to_string(),
             -1 => "down".to_string(),
             _ => "neutral".to_string(),
@@ -72,86 +99,148 @@ fn analyze_change_trends(texts: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn analyze_change_trend_backend(text: &str) -> i32 {
-    let lower = text.to_lowercase();
-
-    // 1) Жёсткий нерф: удаление / "больше не ..." (кроме "больше не уменьшается")
-    if lower.contains("удалено")
-        || lower.contains("removed")
-        || (lower.contains("больше не")
-            && !lower.contains("больше не уменьшается")
-            && !lower.contains("no longer reduced"))
-    {
-        return -1;
-    }
-
-    // 2) "больше не уменьшается" / "no longer reduced" — всегда бафф
-    if lower.contains("больше не уменьшается") || lower.contains("no longer reduced") {
-        return 1;
-    }
-
-    // 3) Инверсные статы: меньше = лучше
-    let is_inverse = lower.contains("перезарядка")
-        || lower.contains("cooldown")
-        || lower.contains("стоимость")
-        || lower.contains("cost")
-        || lower.contains("mana")
-        || lower.contains("маны")
-        || lower.contains("energy")
-        || lower.contains("энергии")
-        || lower.contains("затраты")
-        || lower.contains("время")
-        || lower.contains("time");
-
-    // 4) Разбираем "from -> to" как на фронте (аналог analyzeChangeTrend)
-    let arrow_re = Regex::new(r"\s*(?:→|⇒|->)\s*").unwrap();
-    let parts: Vec<&str> = arrow_re.split(text).collect();
-    if parts.len() == 2 {
-        let parse_val = |s: &str| -> f64 {
-            let num_re = Regex::new(r"[-+]?\d+(?:[.,]\d+)?").unwrap();
-            let nums: Vec<f64> = num_re
-                .find_iter(s)
-                .filter_map(|m| m.as_str().replace(',', ".").parse::<f64>().ok())
-                .collect();
-            if nums.is_empty() {
-                f64::NAN
-            } else {
-                nums.iter().sum()
-            }
-        };
-
-        let from = parse_val(parts[0]);
-        let to = parse_val(parts[1]);
-
-        if from.is_finite() && to.is_finite() {
-            if to > from {
-                return if is_inverse { -1 } else { 1 };
-            }
-            if to < from {
-                return if is_inverse { 1 } else { -1 };
-            }
-        }
-    }
-
-    // 5) Ключевые слова: бафф
-    let buff_re =
-        Regex::new(r"(увеличен|усилен|increased|buffed|new effect|новый эффект)").unwrap();
-    if buff_re.is_match(&lower) {
-        return 1;
-    }
-
-    // 6) Ключевые слова: нерф
-    let nerf_re = Regex::new(r"(уменьшен|ослаблен|decreased|nerfed|removed|удалено)").unwrap();
-    if nerf_re.is_match(&lower) {
-        return -1;
-    }
-
-    // 7) Иначе — изменение без явного баффа/нерфа
-    0
-}
-
 fn log(_app: &AppHandle, level: &str, message: &str) {
     println!("[{}] {}", level, message);
+}
+
+#[cfg(not(debug_assertions))]
+fn is_release_newer(current: &str, latest: &str) -> bool {
+    let parse = |raw: &str| -> Vec<u32> {
+        raw.trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    let cur = parse(current);
+    let lat = parse(latest);
+    let max_len = cur.len().max(lat.len());
+    for idx in 0..max_len {
+        let a = *cur.get(idx).unwrap_or(&0);
+        let b = *lat.get(idx).unwrap_or(&0);
+        if b > a {
+            return true;
+        }
+        if b < a {
+            return false;
+        }
+    }
+    false
+}
+
+#[cfg(not(debug_assertions))]
+async fn try_auto_update_from_github(app: AppHandle) {
+    let current_version = app.package_info().version.to_string();
+    let release_url = "https://api.github.com/repos/RaspizDIYs/patch-analyzer/releases/latest";
+    let client = match reqwest::Client::builder()
+        .user_agent(format!("PatchAnalyzer/{current_version}"))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log(&app, "WARN", &format!("auto-update client init failed: {e}"));
+            return;
+        }
+    };
+
+    let release = match client
+        .get(release_url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(resp) => match resp.json::<GithubRelease>().await {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                log(&app, "WARN", &format!("auto-update release json parse failed: {e}"));
+                return;
+            }
+        },
+        Err(e) => {
+            log(&app, "WARN", &format!("auto-update release fetch failed: {e}"));
+            return;
+        }
+    };
+
+    let latest_version = release.tag_name.trim_start_matches('v').to_string();
+    if !is_release_newer(&current_version, &latest_version) {
+        return;
+    }
+
+    let selected_asset = release
+        .assets
+        .iter()
+        .find(|asset| {
+            let n = asset.name.to_lowercase();
+            n.ends_with(".exe") && (n.contains("setup") || n.contains("nsis"))
+        })
+        .or_else(|| release.assets.iter().find(|asset| asset.name.to_lowercase().ends_with(".exe")));
+
+    let Some(asset) = selected_asset else {
+        log(&app, "WARN", "auto-update: no .exe installer asset found");
+        return;
+    };
+
+    let installer_bytes = match client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(resp) => match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                log(&app, "WARN", &format!("auto-update installer bytes failed: {e}"));
+                return;
+            }
+        },
+        Err(e) => {
+            log(&app, "WARN", &format!("auto-update installer download failed: {e}"));
+            return;
+        }
+    };
+
+    let cache_dir = app.path().app_cache_dir().unwrap_or_else(|_| std::env::temp_dir());
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        log(&app, "WARN", &format!("auto-update cache dir create failed: {e}"));
+        return;
+    }
+
+    let installer_path = cache_dir.join(format!("patch-analyzer-{latest_version}-setup.exe"));
+    if let Err(e) = std::fs::write(&installer_path, installer_bytes.as_ref()) {
+        log(&app, "WARN", &format!("auto-update installer save failed: {e}"));
+        return;
+    }
+
+    let spawn_result = std::process::Command::new(&installer_path).spawn();
+    match spawn_result {
+        Ok(_) => {
+            log(
+                &app,
+                "INFO",
+                &format!(
+                    "auto-update: launching installer {} ({})",
+                    asset.name,
+                    latest_version
+                ),
+            );
+            app.exit(0);
+        }
+        Err(e) => {
+            log(
+                &app,
+                "WARN",
+                &format!("auto-update installer launch failed: {e}"),
+            );
+        }
+    }
+}
+
+fn game_assets_cache_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|p| p.join("game_assets_icons"))
+}
+
+fn patch_assets_cache_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|p| p.join("patch_assets"))
 }
 
 async fn refresh_augments_catalog_if_needed(
@@ -214,6 +303,7 @@ async fn refresh_augments_catalog_if_needed(
 }
 
 const PATCH_NOT_CACHED: &str = "PATCH_NOT_CACHED";
+const PREVIOUS_PATCH_SAVED_EVENT: &str = "previous_patch_saved";
 
 async fn get_or_fetch_patch(
     version: &str,
@@ -229,17 +319,23 @@ async fn get_or_fetch_patch(
             return Err(PATCH_NOT_CACHED.to_string());
         }
     } else {
-        match db.get_patch_resolving(version).await {
-            Ok(Some(patch)) => {
-                let stored_loc = patch.patch_notes_locale.as_deref().unwrap_or("ru");
-                let same_locale = stored_loc == patch_notes_locale;
-                if !patch.patch_notes.is_empty() && (same_locale || !allow_network) {
-                    return db
-                        .patch_with_wiki_augment_enrichment(patch)
-                        .await
-                        .map_err(|e| e.to_string());
+        match db
+            .get_patch_resolving_with_locale(version, patch_notes_locale)
+            .await
+        {
+            Ok(Some(mut patch)) => {
+                if allow_network {
+                    if let Some(dir) = patch_assets_cache_dir(app) {
+                        let _ = asset_cache::localize_patch_assets(
+                            scraper.http_client(),
+                            &dir,
+                            &mut patch,
+                        )
+                        .await;
+                        let _ = db.save_patch(&patch).await;
+                    }
                 }
-                if !allow_network {
+                if !patch.patch_notes.is_empty() || !allow_network {
                     return db
                         .patch_with_wiki_augment_enrichment(patch)
                         .await
@@ -266,7 +362,10 @@ async fn get_or_fetch_patch(
         .fetch_current_meta(version, patch_notes_locale)
         .await
     {
-        Ok(data) => {
+        Ok(mut data) => {
+            if let Some(dir) = patch_assets_cache_dir(app) {
+                let _ = asset_cache::localize_patch_assets(scraper.http_client(), &dir, &mut data).await;
+            }
             let _ = db.save_patch(&data).await;
             refresh_augments_catalog_if_needed(scraper, db, force_refresh, app).await;
             let data = db
@@ -537,11 +636,7 @@ async fn refresh_game_assets(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let force = force.unwrap_or(true);
-    let icon_cache = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|p| p.join("game_assets_icons"));
+    let icon_cache = game_assets_cache_dir(&app);
     let cache = icon_cache.as_deref();
     game_assets::refresh_game_assets(state.scraper.as_ref(), state.db.as_ref(), cache, force)
         .await
@@ -655,7 +750,7 @@ async fn get_tier_list(
 
             for block in &note.details {
                 for change in &block.changes {
-                    match analyze_change_trend_backend(change) {
+                    match analyze_change_trend(change) {
                         1 => entry.buffs += 1,
                         -1 => entry.nerfs += 1,
                         _ => entry.adjusted += 1,
@@ -701,15 +796,12 @@ async fn sync_patch_history(
     for version in patches_list {
         let need_fetch = match state
             .db
-            .get_patch(&version)
+            .get_patch_resolving_with_locale(&version, loc)
             .await
             .ok()
             .flatten()
         {
-            Some(p) => {
-                let sl = p.patch_notes_locale.as_deref().unwrap_or("ru");
-                sl != loc || p.patch_notes.is_empty()
-            }
+            Some(p) => p.patch_notes.is_empty(),
             None => true,
         };
 
@@ -722,7 +814,15 @@ async fn sync_patch_history(
             let fetch_result = state.scraper.fetch_current_meta(&version, loc).await;
 
             match fetch_result {
-                Ok(data) => {
+                Ok(mut data) => {
+                    if let Some(dir) = patch_assets_cache_dir(&app) {
+                        let _ = asset_cache::localize_patch_assets(
+                            state.scraper.http_client(),
+                            &dir,
+                            &mut data,
+                        )
+                        .await;
+                    }
                     if let Err(e) = state.db.save_patch(&data).await {
                         log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
                     } else {
@@ -750,11 +850,333 @@ async fn sync_patch_history(
 }
 
 #[tauri::command]
+async fn sync_previous_patch_history_to_limit(
+    target_total: Option<u32>,
+    patch_notes_locale: String,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let loc = if patch_notes_locale == "en" { "en" } else { "ru" };
+    let target_total = target_total.unwrap_or(50).clamp(50, 100) as usize;
+    let baseline_recent = 20usize;
+
+    let patches_list = state
+        .scraper
+        .fetch_available_patches_with_limit(100)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if patches_list.len() <= baseline_recent {
+        log(
+            &app,
+            "INFO",
+            "No previous patches available for retrospective sync.",
+        );
+        return Ok(());
+    }
+
+    let end = target_total.min(patches_list.len());
+    if end <= baseline_recent {
+        log(&app, "INFO", "Selected target does not require previous patch sync.");
+        return Ok(());
+    }
+    let previous_slice = &patches_list[baseline_recent..end];
+
+    log(
+        &app,
+        "INFO",
+        &format!(
+            "Starting previous patches sync: target_total={}, syncing {} versions.",
+            target_total,
+            previous_slice.len()
+        ),
+    );
+
+    let total = previous_slice.len();
+    let mut downloaded = 0usize;
+    let mut skipped = 0usize;
+    let _ = app.emit(
+        PREVIOUS_PATCH_SAVED_EVENT,
+        PreviousPatchSavedPayload {
+            version: String::new(),
+            processed: 0,
+            total,
+            downloaded,
+            skipped,
+            saved: false,
+        },
+    );
+
+    for (idx, version) in previous_slice.iter().enumerate() {
+        let already_cached = state
+            .db
+            .patch_exists_resolving(version)
+            .await
+            .unwrap_or(false);
+        if already_cached {
+            skipped += 1;
+            log(
+                &app,
+                "INFO",
+                &format!("Skipping already cached previous patch: {}", version),
+            );
+            let _ = app.emit(
+                PREVIOUS_PATCH_SAVED_EVENT,
+                PreviousPatchSavedPayload {
+                    version: version.to_string(),
+                    processed: idx + 1,
+                    total,
+                    downloaded,
+                    skipped,
+                    saved: false,
+                },
+            );
+            continue;
+        }
+
+        let mut saved = false;
+        log(
+            &app,
+            "INFO",
+            &format!("Downloading previous patch: {} ...", version),
+        );
+        let fetch_result = state.scraper.fetch_current_meta(version, loc).await;
+
+        match fetch_result {
+            Ok(mut data) => {
+                if let Some(dir) = patch_assets_cache_dir(&app) {
+                    let _ = asset_cache::localize_patch_assets(
+                        state.scraper.http_client(),
+                        &dir,
+                        &mut data,
+                    )
+                    .await;
+                }
+                if let Err(e) = state.db.save_patch(&data).await {
+                    log(&app, "ERROR", &format!("Failed to save {}: {}", version, e));
+                } else {
+                    log(&app, "SUCCESS", &format!("Saved previous patch {}", version));
+                    saved = true;
+                    downloaded += 1;
+                }
+            }
+            Err(e) => {
+                log(&app, "ERROR", &format!("Failed to download {}: {}", version, e));
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        let _ = app.emit(
+            PREVIOUS_PATCH_SAVED_EVENT,
+            PreviousPatchSavedPayload {
+                version: version.to_string(),
+                processed: idx + 1,
+                total,
+                downloaded,
+                skipped,
+                saved,
+            },
+        );
+    }
+
+    refresh_augments_catalog_if_needed(
+        state.scraper.as_ref(),
+        state.db.as_ref(),
+        false,
+        &app,
+    )
+    .await;
+
+    log(&app, "SUCCESS", "Previous patches sync completed.");
+    Ok(())
+}
+
+#[tauri::command]
 async fn clear_database(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.db.clear_database().await.map_err(|e| e.to_string())?;
     let mut cache = state.tier_cache.lock().await;
     *cache = None;
     Ok(())
+}
+
+fn count_files_recursive(dir: &std::path::Path) -> (u64, u64) {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let entries = match std::fs::read_dir(&path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(md) = entry.metadata() {
+                if md.is_file() {
+                    files += 1;
+                    bytes += md.len();
+                }
+            }
+        }
+    }
+    (files, bytes)
+}
+
+#[derive(Serialize)]
+struct CacheStatusPayload {
+    patch_versions: usize,
+    patch_locales: Vec<String>,
+    static_catalog_rows: usize,
+    patch_asset_files: u64,
+    patch_asset_bytes: u64,
+    game_asset_files: u64,
+    game_asset_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct AssetValidationPayload {
+    checked: usize,
+    missing: usize,
+    broken_paths: Vec<String>,
+}
+
+#[tauri::command]
+async fn cache_status(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<CacheStatusPayload, String> {
+    let versions = state
+        .db
+        .list_cached_patch_versions()
+        .await
+        .map_err(|e| e.to_string())?;
+    let locales = state
+        .db
+        .list_cached_patch_locales()
+        .await
+        .map_err(|e| e.to_string())?;
+    let static_rows = state
+        .db
+        .static_catalog_count()
+        .await
+        .map_err(|e| e.to_string())? as usize;
+
+    let (patch_asset_files, patch_asset_bytes) = patch_assets_cache_dir(&app)
+        .filter(|p| p.exists())
+        .map(|p| count_files_recursive(&p))
+        .unwrap_or((0, 0));
+    let (game_asset_files, game_asset_bytes) = game_assets_cache_dir(&app)
+        .filter(|p| p.exists())
+        .map(|p| count_files_recursive(&p))
+        .unwrap_or((0, 0));
+
+    let payload = CacheStatusPayload {
+        patch_versions: versions.len(),
+        patch_locales: locales,
+        static_catalog_rows: static_rows,
+        patch_asset_files,
+        patch_asset_bytes,
+        game_asset_files,
+        game_asset_bytes,
+    };
+    if let Ok(s) = serde_json::to_string(&payload) {
+        log(&app, "INFO", &format!("cache_status => {}", s));
+    }
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn warm_full_cache(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let cache = game_assets_cache_dir(&app);
+    game_assets::refresh_game_assets(
+        state.scraper.as_ref(),
+        state.db.as_ref(),
+        cache.as_deref(),
+        true,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let patches = state
+        .scraper
+        .fetch_available_patches()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for locale in ["ru", "en"] {
+        for version in &patches {
+            let _ = get_or_fetch_patch(
+                version,
+                locale,
+                &app,
+                state.db.as_ref(),
+                state.scraper.as_ref(),
+                false,
+                true,
+            )
+            .await;
+        }
+    }
+    log(&app, "SUCCESS", "warm_full_cache => completed");
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_all_cached_data(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .clear_all_cached_data()
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(dir) = game_assets_cache_dir(&app) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    if let Some(dir) = patch_assets_cache_dir(&app) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let mut cache = state.tier_cache.lock().await;
+    *cache = None;
+    log(&app, "SUCCESS", "clear_all_cached_data => completed");
+    Ok(())
+}
+
+#[tauri::command]
+async fn validate_cached_assets(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<AssetValidationPayload, String> {
+    let mut checked = 0usize;
+    let mut missing = 0usize;
+    let mut broken_paths: Vec<String> = Vec::new();
+
+    let kinds = ["champion", "item", "rune", "augment", "champion_ability"];
+    for kind in kinds {
+        let rows = state
+            .db
+            .get_static_catalog_kind(kind)
+            .await
+            .unwrap_or_default();
+        for row in rows {
+            for src in row.icon_sources {
+                let Some(url) = src.url else { continue };
+                if src.t != "file" {
+                    continue;
+                }
+                checked += 1;
+                let p = PathBuf::from(&url);
+                if !p.exists() {
+                    missing += 1;
+                    if broken_paths.len() < 100 {
+                        broken_paths.push(url);
+                    }
+                }
+            }
+        }
+    }
+
+    let payload = AssetValidationPayload {
+        checked,
+        missing,
+        broken_paths,
+    };
+    if let Ok(s) = serde_json::to_string(&payload) {
+        log(&app, "INFO", &format!("validate_cached_assets => {}", s));
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -1015,6 +1437,15 @@ pub fn run() {
                     .await;
                 }
             });
+
+            #[cfg(not(debug_assertions))]
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    try_auto_update_from_github(app_handle).await;
+                });
+            }
             
             let menu = Menu::with_items(app, &[
                 &MenuItem::with_id(app, "Show", "Show", true, None::<&str>)?,
@@ -1068,7 +1499,9 @@ pub fn run() {
             get_changed_itemsrunes_titles,
             get_tier_list,
             sync_patch_history,
+            sync_previous_patch_history_to_limit,
             clear_database,
+            clear_all_cached_data,
             check_patches_exist,
             get_latest_ddragon_version,
             check_patch_notes_exists,
@@ -1084,6 +1517,9 @@ pub fn run() {
             get_mayhem_augmentations_page,
             refresh_mayhem_augmentations_from_wiki,
             refresh_game_assets,
+            warm_full_cache,
+            cache_status,
+            validate_cached_assets,
             get_game_assets_meta,
             get_static_catalog_rows,
             get_static_catalog_items_for_maps
