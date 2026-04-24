@@ -29,6 +29,36 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Build release notes from commits
+        id: notes
+        shell: pwsh
+        run: |
+          $currentTag = "${{ github.ref_name }}"
+          $previousTag = git tag --sort=-v:refname | Select-Object -Skip 1 -First 1
+
+          if (-not $previousTag) {
+            $body = @"
+          Release $currentTag
+
+          Initial tagged release notes are not available.
+          "@
+          }
+          else {
+            $lines = git log "$previousTag..$currentTag" --pretty=format:"- %s"
+            if (-not $lines) {
+              $lines = "- No user-facing commits in this range."
+            }
+            $body = @"
+          ## What's changed
+
+          $lines
+          "@
+          }
+
+          "release_body<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $body | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -37,7 +67,7 @@ jobs:
           projectPath: .
           tagName: ${{ github.ref_name }}
           releaseName: "LoL Meta Analyzer ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install this version."
+          releaseBody: ${{ steps.notes.outputs.release_body }}
           releaseDraft: false
           prerelease: false
           args: "--bundles msi,nsis"
